@@ -132,9 +132,17 @@ echo "==> verdict"
 # the spawn transcript ($LOG). Assert against the markers that ARE in the serial
 # transcript: the kernel's vfs.pivot adoption + the getty login prompt (launchd
 # PID 1 reached getty on the union).
-if grep -q "vfs.pivot: / is now unionfs" "$LOG" && grep -q "login:" "$LOG"; then
-    echo "PASS: $ARCH live ISO booted — vfs.pivot to writable union + launchd reached the login prompt"
-    exit 0
+if ! { grep -q "vfs.pivot: / is now unionfs" "$LOG" && grep -q "login:" "$LOG"; }; then
+    echo "FAIL: $ARCH live ISO did not complete the pivot+login sequence (rc=$rc)"
+    exit 1
 fi
-echo "FAIL: $ARCH live ISO did not complete the pivot+login sequence (rc=$rc)"
-exit 1
+# launchctl's boot-time `mount -vat nonfs` must never touch / (#467). The
+# overlay ships no fstab (nextbsd-overlays#5), so the step is skipped; the
+# fwexec half also catches any other failed mount -a.
+if grep -aE 'Cannot union mount root filesystem|fwexec\(mount_tool' "$LOG"; then
+    echo "FAIL: FSTAB-ROOT-REMOUNT -- launchctl mount -a failed or tried to remount / (#467)"
+    exit 1
+fi
+echo "OK: FSTAB-ROOT-QUIET"
+echo "PASS: $ARCH live ISO booted — vfs.pivot to writable union + launchd reached the login prompt"
+exit 0

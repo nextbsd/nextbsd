@@ -136,5 +136,13 @@ if ! grep -aqE ' on / \(ufs, local, noatime' "$LOG"; then
     exit 1
 fi
 echo "OK: ROOT-NOATIME"
+# launchctl's boot-time `mount -vat nonfs` must never touch / (#467). The
+# overlay ships no fstab (nextbsd-overlays#5), so the step is skipped; the
+# fwexec half also catches any other failed mount -a.
+if grep -aE 'Cannot union mount root filesystem|fwexec\(mount_tool' "$LOG"; then
+    echo "FAIL: FSTAB-ROOT-REMOUNT -- launchctl mount -a failed or tried to remount / (#467)"
+    exit 1
+fi
+echo "OK: FSTAB-ROOT-QUIET"
 echo "PASS: $ARCH disk image booted — launchd reached the login prompt on a UFS root"
 exit 0
