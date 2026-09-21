@@ -4,7 +4,7 @@
 # The entire OS now comes from the nextbsd-pkg flat repo: one `pkg install
 # NextBSD-everything` lays down the freebsd-compat base + kernel + Darwin
 # userland (incl. the LaunchDaemons, bundled into the NextBSD-userland package)
-# + kexts. The user-editable /etc config (accounts, sshd_config, pam.d, fstab,
+# + kexts. The user-editable /etc config (accounts, sshd_config, pam.d, ttys,
 # ...) is NOT package-owned — it is seeded from the nextbsd-overlays repo below
 # so `pkg upgrade` can never clobber it. There is NO in-chroot compile — src/ is
 # gone — and no tar-extract/hand-drop of base/kernel/kexts.
@@ -315,10 +315,12 @@ chown -R 0:0 "$RF" 2>/dev/null || true
 
 #
 # 6. assemble the bootable GPT disk image (BIOS + UEFI, rw UFS root).
-#    No /etc/fstab heredoc — the nextbsd-overlays seed (rootfs/private/etc/fstab) carries the real root
-#    entry, and nextbsd-overlays rootfs/boot/loader.conf.d/ carries the loader
-#    settings. The kernel mounts the freebsd-ufs partition read-only;
-#    launchd PID 1 remounts it read-write before starting any daemon.
+#    No /etc/fstab is shipped (nextbsd-overlays#5, as on macOS since 10.4):
+#    the kernel mounts the freebsd-ufs partition read-only from its baked-in
+#    ROOTDEVNAME (nextbsd-kernel config/NEXTBSD, #188), and launchd PID 1
+#    fscks it and remounts it rw,noatime before starting any daemon
+#    (nextbsd-userland#185). nextbsd-overlays rootfs/boot/loader.conf.d/
+#    carries the remaining loader settings.
 #    No cd9660, no uzip, no unionfs, no ramdisk pivot.
 #
 CONTENT_BYTES=$(du -sk "$WORK/rootfs" | awk '{print $1*1024}')
@@ -353,8 +355,8 @@ echo "==> [libscan] ELF shared-library closure over rootfs"
 echo "==> [libscan] end"
 
 # 6a. root UFS — content plus ~1.5 GB read-write headroom. UFS label
-#     "ROOTFS" matches loader.conf.d's vfs.root.mountfrom and the
-#     the nextbsd-overlays seed (rootfs/private/etc/fstab) entry. softupdates for crash resilience.
+#     "ROOTFS" matches the kernel's baked-in ROOTDEVNAME
+#     (ufs:/dev/ufs/ROOTFS, #188). softupdates for crash resilience.
 # Force the ENTIRE staged tree to root:wheel (uid/gid 0) before makefs records
 # it. makefs bakes in the staging tree's on-disk ownership, but the tree is
 # assembled by the unprivileged build user: mkdir'd top-level dirs (/, /usr,
