@@ -163,6 +163,8 @@ rm -rf "$OVL"
 git clone --depth 1 https://github.com/nextbsd-redux/nextbsd-overlays "$OVL"
 cp -R "$OVL/rootfs/." "$RF/"
 chmod 0600 "$RF/private/etc/master.passwd"
+# sudo refuses a sudoers that is not mode 0440; git stores the overlay's as 0644.
+[ -f "$RF/private/etc/sudoers" ] && chmod 0440 "$RF/private/etc/sudoers"
 [ -s "$RF/private/etc/master.passwd" ] || { echo "ERROR: nextbsd-overlays seed produced no master.passwd" >&2; exit 1; }
 
 # launchd -w job-overrides DB dir so launchd loads cleanly at boot.
