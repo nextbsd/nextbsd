@@ -97,19 +97,40 @@ expect {
     }
 }
 
-# Stage 2: the login prompt = launchd PID 1 came up on the union.
+# Stage 2 and 3, in one block: launchd PID 1 came up on the union and we have
+# a shell.
+#
+# The third copy of the same fix. nextbsd-overlays f9dcd5b (#278) disabled root
+# the way Darwin does -- its password field went from empty to "*" -- so
+# sending "root" with an empty password is rejected. admin is the way in:
+# nss_directory_services gives an account carrying noPassword an EMPTY passwd
+# field for a privileged caller (dsdb_pack_passwd), and login is privileged.
+#
+# Waiting for "login:" and then deciding was two blocks, and that was the
+# second bug: where automatic login works there is no prompt, so the first
+# block waited out eight minutes and the second never ran. One block does both.
 expect {
-    timeout { puts "\nFAIL: 'login:' prompt not seen within 8 minutes"; exit 1 }
-    "login:" { puts "\nOK: LOGIN-OK — launchd reached getty on the live union" }
+    timeout { puts "\nFAIL: neither a login prompt nor an automatic login in 8 minutes"; exit 1 }
+    -re "panic|Fatal trap" { puts "\nFAIL: kernel panic during boot"; exit 1 }
+    -re {login on console as admin} {
+        puts "\nOK: LOGIN-OK — launchd reached getty on the live union, which logged admin in"
+    }
+    "login:" {
+        puts "\nOK: LOGIN-OK — launchd reached getty on the live union"
+        send "admin\r"
+        expect {
+            timeout { puts "\nFAIL: no response after sending admin"; exit 1 }
+            "Login incorrect" { puts "\nFAIL: admin login rejected"; exit 1 }
+            "Password:" { send "\r"; exp_continue }
+            -re {[#%$] $} { puts "\nOK: logged in as admin" }
+        }
+    }
 }
-
-# Stage 3: log in, confirm / is a writable union via df.
-send "root\r"
+send "\r"
+send "echo NB-SHELL-READY\r"
 expect {
-    timeout { puts "\nFAIL: no response after sending root"; exit 1 }
-    "Password:" { send "\r"; exp_continue }
-    "Login incorrect" { puts "\nFAIL: root login rejected"; exit 1 }
-    -re {[#%$] $} { puts "\nOK: at root shell prompt" }
+    timeout { puts "\nFAIL: no shell after login"; exit 1 }
+    "NB-SHELL-READY" { puts "\nOK: shell is responding" }
 }
 send "df / ; mount | grep ' / '\r"
 expect {
@@ -117,7 +138,7 @@ expect {
     -re "unionfs" { puts "\nOK: ROOT-IS-UNION — / is a unionfs mount" }
     -re {[#%$] $} { }
 }
-send "halt -p\r"
+send "sudo halt -p\r"
 expect { timeout { } eof { } }
 puts "\nISO-BOOT-DONE"
 EOF
@@ -132,7 +153,7 @@ echo "==> verdict"
 # the spawn transcript ($LOG). Assert against the markers that ARE in the serial
 # transcript: the kernel's vfs.pivot adoption + the getty login prompt (launchd
 # PID 1 reached getty on the union).
-if ! { grep -q "vfs.pivot: / is now unionfs" "$LOG" && grep -q "login:" "$LOG"; }; then
+if ! { grep -q "vfs.pivot: / is now unionfs" "$LOG" && grep -qE "login:|login on console as admin" "$LOG"; }; then
     echo "FAIL: $ARCH live ISO did not complete the pivot+login sequence (rc=$rc)"
     exit 1
 fi
