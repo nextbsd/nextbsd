@@ -106,6 +106,14 @@ loader_boot "boot -v"
 expect {
     timeout { puts "\nFAIL: neither a login prompt nor an automatic login in 8 minutes"; exit 1 }
     -re "panic|Fatal trap" { puts "\nFAIL: kernel panic during boot"; exit 1 }
+    -re {[#%$] $} {
+        # A bare shell prompt is proof of login too, and on the live ISO it is
+        # the ONLY evidence that reaches the serial: getty autologins, neither a
+        # "login:" prompt nor the "login on console as admin" marker is emitted,
+        # and the next thing on the wire is zsh's prompt. Matching only the first
+        # two failed a machine that had booted, pivoted and logged in correctly.
+        puts "\nOK: LOGIN-OK — at a shell prompt (automatic login)"
+    }
     -re {login on console as admin} {
         puts "\nOK: LOGIN-OK — launchd reached getty, which logged admin in"
     }
@@ -161,6 +169,22 @@ expect -f "$EXP"
 rc=$?
 set -e
 
+# Did a console session start? Three accepted forms, because root being disabled
+# (nextbsd-overlays f9dcd5b) changed which of them reaches the serial:
+#   "login:"                   a getty prompt
+#   "login on console as ..."  getty autologin announced itself
+#   the shell prompt itself    on the live ISO this is the ONLY evidence -- getty
+#                              autologins and emits neither of the above
+# The prompt carries SGR escapes INSIDE it ("\033[32madmin\033[39m@\033[39mhost"),
+# so "admin@" never appears literally -- hence [^@]{0,12} rather than a bare
+# "admin@". Stripping the escapes first was the obvious alternative and is worse:
+# BSD tr does not honour '\033', so it silently did nothing and the pattern could
+# never fire. Verified against the real failing transcript, a plain escape-free
+# prompt, and a negative case containing "user@host".
+login_seen() {
+    grep -aqE "login:|login on console as admin|admin[^@]{0,12}@" "$1"
+}
+
 echo "==> verdict"
 # The OK `puts` lines go to expect's stdout, not the serial transcript ($LOG).
 # Assert against the getty login prompt in the transcript (launchd PID 1 reached
@@ -168,7 +192,7 @@ echo "==> verdict"
 # Either a login prompt or an automatic login proves launchd got getty up.
 # Asserting only on "login:" would fail an image that logs admin in
 # automatically, which is the configured behaviour on a seeded image.
-if ! grep -qE "login:|login on console as admin" "$LOG"; then
+if ! login_seen "$LOG"; then
     echo "FAIL: $ARCH disk image did not reach a login (rc=$rc)"
     exit 1
 fi
