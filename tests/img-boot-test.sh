@@ -125,11 +125,26 @@ expect {
     timeout { puts "\nFAIL: no shell after login"; exit 1 }
     "NB-SHELL-READY" { puts "\nOK: shell is responding" }
 }
-send "mount | grep ' / '\r"
+# Bracket the output with a sentinel and read until it arrives. Matching a bare
+# shell prompt here was a race: the previous command's prompt is still sitting in
+# expect's buffer, so on a slow arm64 guest the prompt matched before mount had
+# printed anything, the "on / (...)" line never reached the transcript, and the
+# noatime check below failed on an image that was in fact mounted correctly. The
+# quotes keep the echoed command line from matching the sentinel.
+send "mount | grep ' / '; echo MOUNT'-'REPORTED\r"
+set saw_root 0
 expect {
-    timeout { puts "\nWARN: mount produced no output" }
-    -re { on / \((ufs[^)]*)\)} { puts "\nOK: ROOT-IS-UFS — / is a ufs mount ($expect_out(1,string))" }
-    -re {[#%$] $} { }
+    timeout { puts "\nFAIL: mount printed nothing before the sentinel"; exit 1 }
+    -re { on / \((ufs[^)]*)\)} {
+        set saw_root 1
+        puts "\nOK: ROOT-IS-UFS — / is a ufs mount ($expect_out(1,string))"
+        exp_continue
+    }
+    "MOUNT-REPORTED" { }
+}
+if {$saw_root == 0} {
+    puts "\nFAIL: ROOT-IS-UFS — mount printed no ' on / (ufs...)' line"
+    exit 1
 }
 # admin is not root, and halt is root's to run.
 send "sudo halt -p\r"

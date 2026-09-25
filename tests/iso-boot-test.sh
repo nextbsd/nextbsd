@@ -132,11 +132,22 @@ expect {
     timeout { puts "\nFAIL: no shell after login"; exit 1 }
     "NB-SHELL-READY" { puts "\nOK: shell is responding" }
 }
-send "df / ; mount | grep ' / '\r"
+# Same sentinel as img-boot-test.sh, and for the same reason: a bare prompt match
+# here raced the previous command's leftover prompt.
+send "df / ; mount | grep ' / '; echo MOUNT'-'REPORTED\r"
+set saw_union 0
 expect {
-    timeout { puts "\nWARN: df/mount produced no output" }
-    -re "unionfs" { puts "\nOK: ROOT-IS-UNION — / is a unionfs mount" }
-    -re {[#%$] $} { }
+    timeout { puts "\nFAIL: df/mount printed nothing before the sentinel"; exit 1 }
+    -re "unionfs" {
+        set saw_union 1
+        puts "\nOK: ROOT-IS-UNION — / is a unionfs mount"
+        exp_continue
+    }
+    "MOUNT-REPORTED" { }
+}
+if {$saw_union == 0} {
+    puts "\nFAIL: ROOT-IS-UNION — mount printed no unionfs line for /"
+    exit 1
 }
 send "sudo halt -p\r"
 expect { timeout { } eof { } }
