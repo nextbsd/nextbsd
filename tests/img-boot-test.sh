@@ -86,13 +86,6 @@ loader_set "set boot_multicons=YES"
 # full boot output; shipped images (booted normally) stay quiet.
 loader_boot "boot -v"
 
-# Stage 1: launchd PID 1 comes up and getty reaches a login prompt.
-expect {
-    timeout { puts "\nFAIL: 'login:' prompt not seen within 8 minutes"; exit 1 }
-    -re "panic|Fatal trap" { puts "\nFAIL: kernel panic during boot"; exit 1 }
-    "login:" { puts "\nOK: LOGIN-OK — launchd reached getty on the UFS root" }
-}
-
 # Stage 2: get a shell as admin and confirm a UFS root (direct disk boot, no
 # live union pivot).
 #
@@ -106,16 +99,23 @@ expect {
 # noPassword an EMPTY passwd field for a privileged caller
 # (dsdb_pack_passwd), and login is privileged. Where automatic login is
 # configured there is no prompt at all, so both paths are handled.
+# Boot completes and we get a shell, in one block. This was two -- a wait for
+# "login:" and then a decision that handled either a prompt or an automatic
+# login -- and on an image where automatic login works there is no prompt, so
+# the first block waited out eight minutes and the second never ran.
 expect {
-    timeout { puts "\nFAIL: neither a login prompt nor an automatic login"; exit 1 }
-    -re {login on console as admin} { puts "\nOK: logged in automatically as admin" }
+    timeout { puts "\nFAIL: neither a login prompt nor an automatic login in 8 minutes"; exit 1 }
+    -re "panic|Fatal trap" { puts "\nFAIL: kernel panic during boot"; exit 1 }
+    -re {login on console as admin} {
+        puts "\nOK: LOGIN-OK — launchd reached getty, which logged admin in"
+    }
     "login:" {
         send "admin\r"
         expect {
             timeout { puts "\nFAIL: no response after sending admin"; exit 1 }
             "Login incorrect" { puts "\nFAIL: admin login rejected"; exit 1 }
             "Password:" { send "\r"; exp_continue }
-            -re {[#%$] $} { puts "\nOK: logged in as admin" }
+            -re {[#%$] $} { puts "\nOK: LOGIN-OK — logged in as admin" }
         }
     }
 }

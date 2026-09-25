@@ -211,18 +211,14 @@ expect {
     }
 }
 
-# Stage 1b: wait for the getty "login:" prompt. Boot is complete:
-# loader preloaded mach.ko -> kernel mounts the freebsd-ufs root rw ->
-# /sbin/launchd as PID 1 -> getty plist -> login.
-expect {
-    timeout {
-        puts "\nFAIL: 'login:' prompt not seen within 8 minutes"
-        exit 1
-    }
-    "login:" { puts "\nOK: boot reached the login prompt" }
-}
-
-# Stage 2: get a shell as admin.
+# Stage 1b and 2, together: boot completes and we get a shell.
+#
+# These were two blocks, and that was the bug. The first waited for "login:"
+# and the second handled either a prompt or an automatic login -- so on an
+# image where automatic login works there is no prompt, the first block waits
+# out its full eight minutes, and the second never runs. Splitting the wait
+# from the decision meant the earlier block could contradict the later one.
+# One block now does both.
 #
 # This used to send "root" with an empty password. That stopped working when
 # nextbsd-overlays f9dcd5b (#278) disabled root the way Darwin does: root's
@@ -237,7 +233,11 @@ expect {
 # so both paths are handled rather than assuming either.
 expect {
     timeout {
-        puts "\nFAIL: neither a login prompt nor an automatic login"
+        puts "\nFAIL: neither a login prompt nor an automatic login in 8 minutes"
+        exit 1
+    }
+    -re {panic|Fatal trap} {
+        puts "\nFAIL: kernel panic during boot"
         exit 1
     }
     -re {login on console as admin} {
