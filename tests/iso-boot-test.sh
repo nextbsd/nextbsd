@@ -138,6 +138,10 @@ send "df / ; mount | grep ' / '; echo MOUNT'-'REPORTED\r"
 set saw_union 0
 expect {
     timeout { puts "\nFAIL: df/mount printed nothing before the sentinel"; exit 1 }
+    -re {panic|Fatal trap|Fatal data abort} {
+        puts "\nFAIL: kernel panic after login, before df/mount reported"
+        exit 1
+    }
     -re "unionfs" {
         set saw_union 1
         puts "\nOK: ROOT-IS-UNION — / is a unionfs mount"

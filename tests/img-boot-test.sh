@@ -135,6 +135,10 @@ send "mount | grep ' / '; echo MOUNT'-'REPORTED\r"
 set saw_root 0
 expect {
     timeout { puts "\nFAIL: mount printed nothing before the sentinel"; exit 1 }
+    -re {panic|Fatal trap|Fatal data abort} {
+        puts "\nFAIL: kernel panic after login, before mount reported"
+        exit 1
+    }
     -re { on / \((ufs[^)]*)\)} {
         set saw_root 1
         puts "\nOK: ROOT-IS-UFS — / is a ufs mount ($expect_out(1,string))"
