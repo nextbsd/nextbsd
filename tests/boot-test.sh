@@ -222,26 +222,62 @@ expect {
     "login:" { puts "\nOK: boot reached the login prompt" }
 }
 
-# Stage 2: log in as root. The live ISO has no root password, so login
-# either drops straight to the shell or asks "Password:" and accepts an
-# empty password. Both paths land at a shell prompt; failure is
-# "Login incorrect" or silence.
-send "root\r"
+# Stage 2: get a shell as admin.
+#
+# This used to send "root" with an empty password. That stopped working when
+# nextbsd-overlays f9dcd5b (#278) disabled root the way Darwin does: root's
+# password field went from empty to "*", so login now rejects every password
+# including the empty one. The image was right and the test was describing an
+# image that no longer exists.
+#
+# admin is the way in. nss_directory_services gives an account carrying
+# noPassword an EMPTY passwd field for a privileged caller
+# (dsdb_pack_passwd), and login is privileged, so an empty password is
+# accepted. Where automatic login is configured there is no prompt at all,
+# so both paths are handled rather than assuming either.
 expect {
     timeout {
-        puts "\nFAIL: no response after sending root"
+        puts "\nFAIL: neither a login prompt nor an automatic login"
         exit 1
     }
-    "Password:" {
-        send "\r"
-        exp_continue
+    -re {login on console as admin} {
+        puts "\nOK: logged in automatically as admin"
     }
-    "Login incorrect" {
-        puts "\nFAIL: root login rejected"
-        exit 1
+    "login:" {
+        send "admin\r"
+        expect {
+            timeout {
+                puts "\nFAIL: no response after sending admin"
+                exit 1
+            }
+            "Login incorrect" {
+                puts "\nFAIL: admin login rejected"
+                exit 1
+            }
+            "Password:" { send "\r"; exp_continue }
+            -re {[#%$] $} { puts "\nOK: logged in as admin" }
+        }
     }
-    -re {[#%$] $} { puts "\nOK: at root shell prompt" }
 }
+
+# Do not match a prompt to decide the shell is ready: automatic login lands
+# early, with driver attach messages still arriving, so the prompt is often
+# not the last thing in the buffer. Ask for a marker instead; characters
+# typed before the shell is ready are buffered by the tty.
+send "\r"
+send "echo NB-SHELL-READY\r"
+expect {
+    timeout {
+        puts "\nFAIL: no shell after login"
+        exit 1
+    }
+    "NB-SHELL-READY" { puts "\nOK: shell is responding" }
+}
+
+# admin is not root. It is in the admin group and sudoes with no password, so
+# wrap the privileged commands rather than repeating the test at each one. A
+# function, so it behaves the same in sh and in zsh, which is admin's shell.
+send "r() { if \[ \"\$(id -u)\" = 0 \]; then \"\$@\"; else sudo \"\$@\"; fi; }\r"
 
 # Stage 3: invoke the on-ISO mach smoke test. Test scripts live under
 # /usr/tests/<component>/ following the FreeBSD convention. The script
@@ -250,7 +286,7 @@ expect {
 #   LIBSYSTEM-KERNEL-OK / LIBSYSTEM-KERNEL-FAIL — userland test_libmach
 # Both must pass.
 set saved_marker_timeout $timeout
-send "/usr/tests/freebsd-launchd-mach/run.sh\r"
+send "r /usr/tests/freebsd-launchd-mach/run.sh\r"
 expect {
     timeout {
         puts "\nFAIL: /usr/tests/freebsd-launchd-mach/run.sh timed out"
@@ -1310,7 +1346,7 @@ expect {
 # non-fatal so this stays green on older continuous images (e.g. when
 # nextbsd-kernel's smoke test boots an image built before kextd/K2 shipped);
 # only an explicit IOCATALOGUE-FAIL gates.
-send "/usr/tests/nextbsd-iokit/run.sh\r"
+send "r /usr/tests/nextbsd-iokit/run.sh\r"
 
 # IOREG — C1.1 (#218) libIOKit registry migration gate. nextbsd-iokit/run.sh
 # now runs the IOREG check FIRST (before the IOCATALOGUE/IOKIT-LOOKUP/KEXTD-LOAD
@@ -1457,7 +1493,7 @@ set timeout 60
 
 # Stage 4: clean halt so qemu exits 0 (the -no-reboot flag turns
 # halt -p into a clean shutdown rather than a reset loop).
-send "halt -p\r"
+send "r halt -p\r"
 expect {
     timeout { puts "\nWARN: halt didn't complete within timeout" }
     "Uptime:" { puts "\nOK: clean halt" }

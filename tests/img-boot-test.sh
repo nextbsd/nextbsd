@@ -93,14 +93,37 @@ expect {
     "login:" { puts "\nOK: LOGIN-OK — launchd reached getty on the UFS root" }
 }
 
-# Stage 2: log in as root (passwordless from base) and confirm a shell + a UFS
-# root (direct disk boot, no live union pivot).
-send "root\r"
+# Stage 2: get a shell as admin and confirm a UFS root (direct disk boot, no
+# live union pivot).
+#
+# This used to send "root" with an empty password. nextbsd-overlays f9dcd5b
+# (#278) disabled root the way Darwin does -- its password field went from
+# empty to "*" -- so login rejects every password including the empty one,
+# and this stage failed with "Login incorrect" on the first image built
+# afterwards. The image was right; the test described an older one.
+#
+# admin is the way in: nss_directory_services gives an account carrying
+# noPassword an EMPTY passwd field for a privileged caller
+# (dsdb_pack_passwd), and login is privileged. Where automatic login is
+# configured there is no prompt at all, so both paths are handled.
 expect {
-    timeout { puts "\nFAIL: no response after sending root"; exit 1 }
-    "Password:" { send "\r"; exp_continue }
-    "Login incorrect" { puts "\nFAIL: root login rejected"; exit 1 }
-    -re {[#%$] $} { puts "\nOK: at root shell prompt" }
+    timeout { puts "\nFAIL: neither a login prompt nor an automatic login"; exit 1 }
+    -re {login on console as admin} { puts "\nOK: logged in automatically as admin" }
+    "login:" {
+        send "admin\r"
+        expect {
+            timeout { puts "\nFAIL: no response after sending admin"; exit 1 }
+            "Login incorrect" { puts "\nFAIL: admin login rejected"; exit 1 }
+            "Password:" { send "\r"; exp_continue }
+            -re {[#%$] $} { puts "\nOK: logged in as admin" }
+        }
+    }
+}
+send "\r"
+send "echo NB-SHELL-READY\r"
+expect {
+    timeout { puts "\nFAIL: no shell after login"; exit 1 }
+    "NB-SHELL-READY" { puts "\nOK: shell is responding" }
 }
 send "mount | grep ' / '\r"
 expect {
@@ -108,7 +131,8 @@ expect {
     -re { on / \((ufs[^)]*)\)} { puts "\nOK: ROOT-IS-UFS — / is a ufs mount ($expect_out(1,string))" }
     -re {[#%$] $} { }
 }
-send "halt -p\r"
+# admin is not root, and halt is root's to run.
+send "sudo halt -p\r"
 expect { timeout { } eof { } }
 puts "\nIMG-BOOT-DONE"
 EOF
@@ -122,8 +146,11 @@ echo "==> verdict"
 # The OK `puts` lines go to expect's stdout, not the serial transcript ($LOG).
 # Assert against the getty login prompt in the transcript (launchd PID 1 reached
 # getty on the installed image).
-if ! grep -q "login:" "$LOG"; then
-    echo "FAIL: $ARCH disk image did not reach the login prompt (rc=$rc)"
+# Either a login prompt or an automatic login proves launchd got getty up.
+# Asserting only on "login:" would fail an image that logs admin in
+# automatically, which is the configured behaviour on a seeded image.
+if ! grep -qE "login:|login on console as admin" "$LOG"; then
+    echo "FAIL: $ARCH disk image did not reach a login (rc=$rc)"
     exit 1
 fi
 # / must carry noatime from launchd's own remount (nextbsd-userland#185), not
