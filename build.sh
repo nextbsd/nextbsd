@@ -674,21 +674,29 @@ dtoverlay=nextbsd-vc4-kms
 CFG
 
     # FreeBSD's FDT bootargs parser takes the "FreeBSD:" prefix and reads what
-    # follows as boot flags, and -v is the flag worth having on a board whose
-    # serial log is the only instrument there is.
+    # follows as boot flags. The file ships with none set, so a Pi boots the
+    # way every other NextBSD machine does.
     #
-    # Measured caveat: on this firmware it does not currently arrive.
-    # parse_fdt_bootargs() only parses when fdt_get_chosen_bootargs() succeeds,
-    # and a tryboot with exactly this line produced a boot that was not
-    # verbose -- so the firmware appears not to be writing /chosen/bootargs at
-    # all. Tracked as nextbsd-kernel#93.
+    # It used to say "FreeBSD: -v", from when this board was being brought up
+    # and its serial log was the only instrument there was. That is no longer
+    # the right default, and leaving it was a trap rather than a nicety:
     #
-    # The file ships anyway. It is correct, it costs nothing, it is the first
-    # place a human will look to change a boot flag, and it starts working the
-    # day the firmware side is understood. What it is NOT is a channel you can
-    # rely on today: anything the kernel must have goes in the compiled-in env
-    # instead.
-    echo 'FreeBSD: -v' > "$BOOTSTAGE/cmdline.txt"
+    #   - The rootfs carries nextbsd-overlays' loader.conf.d, so a Pi already
+    #     gets boot_mutemsgs="YES" (nextbsd#363). RB_VERBOSE is exactly what
+    #     that mute exempts, so a -v that arrived would turn the quiet console
+    #     off again on this board alone.
+    #   - It does not arrive today. parse_fdt_bootargs() only parses when
+    #     fdt_get_chosen_bootargs() succeeds, and a tryboot with exactly that
+    #     line produced a boot that was not verbose, so the firmware appears
+    #     not to be writing /chosen/bootargs at all (nextbsd-kernel#93). The
+    #     flag was therefore inert -- and would have started working, silently
+    #     and everywhere, the day that was fixed.
+    #
+    # The file still ships. It is the first place a human will look to change
+    # a boot flag, and `FreeBSD: -v` is one edit away for anyone debugging.
+    # What it is NOT is a channel to rely on: anything the kernel must have
+    # goes in the compiled-in env instead.
+    echo 'FreeBSD:' > "$BOOTSTAGE/cmdline.txt"
 
     # 100 MB FAT32. sectors_per_cluster=1 keeps makefs above the 65525-cluster
     # floor that makes it FAT32 rather than silently falling back to FAT16,
