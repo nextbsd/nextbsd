@@ -81,23 +81,6 @@ loader_set "set console=comconsole"
 loader_set "set boot_serial=YES"
 loader_set "set comconsole_speed=115200"
 loader_set "set boot_multicons=YES"
-# Keep base virtio_gpu(4) attached. On qemu virt, vtgpu0 IS the live console
-# this harness reads and types at, and VirtIOGraphics' takeover detaches it --
-# the next console write then faults (esr 0x96000047). That is nextbsd-kernel#170,
-# and it predates this harness: it was only ever hidden because the old test had
-# a passwordless root shell and powered off about a second after the kext load
-# was requested, before the ~7s graphics chain finished.
-#
-# Set here at the loader rather than in the image, because the default has to
-# stay on: under UTM and Virtualization.framework base vtgpu displays nothing,
-# so video is blind from the bootloader until this kext loads, and shipping it
-# off would leave those machines blind for good. CI is the environment that
-# cannot tolerate the takeover, so CI is what opts out.
-#
-# This does mean the arm64 lanes do not exercise the DRM handoff. #170 option 3
-# -- a vt_simplefb-style placeholder for arm64 to hand off from -- is what would
-# let them, and until then there is nothing here to test that does not panic.
-loader_set "set hw.virtio_gpu_drm.takeover=0"
 # boot VERBOSE: the shipped image sets boot_mutemsgs="YES" (nextbsd#363), which
 # mutes kernel console output. RB_VERBOSE (boot -v) bypasses the mute so CI sees
 # full boot output; shipped images (booted normally) stay quiet.
