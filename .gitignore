@@ -1,0 +1,7 @@
+work/
+out/
+distfiles/
+repos/
+*.iso
+*.iso.sha256
+SHA256SUMS
