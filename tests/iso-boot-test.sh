@@ -97,27 +97,71 @@ expect {
     }
 }
 
-# Stage 2: the login prompt = launchd PID 1 came up on the union.
+# Stage 2 and 3, in one block: launchd PID 1 came up on the union and we have
+# a shell.
+#
+# The third copy of the same fix. nextbsd-overlays f9dcd5b (#278) disabled root
+# the way Darwin does -- its password field went from empty to "*" -- so
+# sending "root" with an empty password is rejected. admin is the way in:
+# nss_directory_services gives an account carrying noPassword an EMPTY passwd
+# field for a privileged caller (dsdb_pack_passwd), and login is privileged.
+#
+# Waiting for "login:" and then deciding was two blocks, and that was the
+# second bug: where automatic login works there is no prompt, so the first
+# block waited out eight minutes and the second never ran. One block does both.
 expect {
-    timeout { puts "\nFAIL: 'login:' prompt not seen within 8 minutes"; exit 1 }
-    "login:" { puts "\nOK: LOGIN-OK — launchd reached getty on the live union" }
+    timeout { puts "\nFAIL: neither a login prompt nor an automatic login in 8 minutes"; exit 1 }
+    -re "panic|Fatal trap" { puts "\nFAIL: kernel panic during boot"; exit 1 }
+    -re {[#%$] $} {
+        # A bare shell prompt is proof of login too, and on the live ISO it is
+        # the ONLY evidence that reaches the serial: getty autologins, neither a
+        # "login:" prompt nor the "login on console as admin" marker is emitted,
+        # and the next thing on the wire is zsh's prompt. Matching only the first
+        # two failed a machine that had booted, pivoted and logged in correctly.
+        puts "\nOK: LOGIN-OK — at a shell prompt (automatic login)"
+    }
+    -re {login on console as admin} {
+        puts "\nOK: LOGIN-OK — launchd reached getty on the live union, which logged admin in"
+    }
+    "login:" {
+        puts "\nOK: LOGIN-OK — launchd reached getty on the live union"
+        send "admin\r"
+        expect {
+            timeout { puts "\nFAIL: no response after sending admin"; exit 1 }
+            "Login incorrect" { puts "\nFAIL: admin login rejected"; exit 1 }
+            "Password:" { send "\r"; exp_continue }
+            -re {[#%$] $} { puts "\nOK: logged in as admin" }
+        }
+    }
 }
-
-# Stage 3: log in, confirm / is a writable union via df.
-send "root\r"
+send "\r"
+send "echo NB-SHELL-READY\r"
 expect {
-    timeout { puts "\nFAIL: no response after sending root"; exit 1 }
-    "Password:" { send "\r"; exp_continue }
-    "Login incorrect" { puts "\nFAIL: root login rejected"; exit 1 }
-    -re {[#%$] $} { puts "\nOK: at root shell prompt" }
+    timeout { puts "\nFAIL: no shell after login"; exit 1 }
+    "NB-SHELL-READY" { puts "\nOK: shell is responding" }
 }
-send "df / ; mount | grep ' / '\r"
+# Same sentinel as img-boot-test.sh, and for the same reason: a bare prompt match
+# here raced the previous command's leftover prompt.
+send "df / ; mount | grep ' / '; echo MOUNT'-'REPORTED\r"
+set saw_union 0
 expect {
-    timeout { puts "\nWARN: df/mount produced no output" }
-    -re "unionfs" { puts "\nOK: ROOT-IS-UNION — / is a unionfs mount" }
-    -re {[#%$] $} { }
+    timeout { puts "\nFAIL: df/mount printed nothing before the sentinel"; exit 1 }
+    -re {panic|Fatal trap|Fatal data abort} {
+        puts "\nFAIL: kernel panic after login, before df/mount reported"
+        exit 1
+    }
+    -re "unionfs" {
+        set saw_union 1
+        puts "\nOK: ROOT-IS-UNION — / is a unionfs mount"
+        exp_continue
+    }
+    "MOUNT-REPORTED" { }
 }
-send "halt -p\r"
+if {$saw_union == 0} {
+    puts "\nFAIL: ROOT-IS-UNION — mount printed no unionfs line for /"
+    exit 1
+}
+send "sudo halt -p\r"
 expect { timeout { } eof { } }
 puts "\nISO-BOOT-DONE"
 EOF
@@ -127,12 +171,28 @@ expect -f "$EXP"
 rc=$?
 set -e
 
+# Did a console session start? Three accepted forms, because root being disabled
+# (nextbsd-overlays f9dcd5b) changed which of them reaches the serial:
+#   "login:"                   a getty prompt
+#   "login on console as ..."  getty autologin announced itself
+#   the shell prompt itself    on the live ISO this is the ONLY evidence -- getty
+#                              autologins and emits neither of the above
+# The prompt carries SGR escapes INSIDE it ("\033[32madmin\033[39m@\033[39mhost"),
+# so "admin@" never appears literally -- hence [^@]{0,12} rather than a bare
+# "admin@". Stripping the escapes first was the obvious alternative and is worse:
+# BSD tr does not honour '\033', so it silently did nothing and the pattern could
+# never fire. Verified against the real failing transcript, a plain escape-free
+# prompt, and a negative case containing "user@host".
+login_seen() {
+    grep -aqE "login:|login on console as admin|admin[^@]{0,12}@" "$1"
+}
+
 echo "==> verdict"
 # The PIVOT-OK/LOGIN-OK `puts` lines go to expect's stdout (captured by CI), not
 # the spawn transcript ($LOG). Assert against the markers that ARE in the serial
 # transcript: the kernel's vfs.pivot adoption + the getty login prompt (launchd
 # PID 1 reached getty on the union).
-if ! { grep -q "vfs.pivot: / is now unionfs" "$LOG" && grep -q "login:" "$LOG"; }; then
+if ! { grep -q "vfs.pivot: / is now unionfs" "$LOG" && login_seen "$LOG"; }; then
     echo "FAIL: $ARCH live ISO did not complete the pivot+login sequence (rc=$rc)"
     exit 1
 fi

@@ -86,29 +86,80 @@ loader_set "set boot_multicons=YES"
 # full boot output; shipped images (booted normally) stay quiet.
 loader_boot "boot -v"
 
-# Stage 1: launchd PID 1 comes up and getty reaches a login prompt.
+# Stage 2: get a shell as admin and confirm a UFS root (direct disk boot, no
+# live union pivot).
+#
+# This used to send "root" with an empty password. nextbsd-overlays f9dcd5b
+# (#278) disabled root the way Darwin does -- its password field went from
+# empty to "*" -- so login rejects every password including the empty one,
+# and this stage failed with "Login incorrect" on the first image built
+# afterwards. The image was right; the test described an older one.
+#
+# admin is the way in: nss_directory_services gives an account carrying
+# noPassword an EMPTY passwd field for a privileged caller
+# (dsdb_pack_passwd), and login is privileged. Where automatic login is
+# configured there is no prompt at all, so both paths are handled.
+# Boot completes and we get a shell, in one block. This was two -- a wait for
+# "login:" and then a decision that handled either a prompt or an automatic
+# login -- and on an image where automatic login works there is no prompt, so
+# the first block waited out eight minutes and the second never ran.
 expect {
-    timeout { puts "\nFAIL: 'login:' prompt not seen within 8 minutes"; exit 1 }
+    timeout { puts "\nFAIL: neither a login prompt nor an automatic login in 8 minutes"; exit 1 }
     -re "panic|Fatal trap" { puts "\nFAIL: kernel panic during boot"; exit 1 }
-    "login:" { puts "\nOK: LOGIN-OK — launchd reached getty on the UFS root" }
+    -re {[#%$] $} {
+        # A bare shell prompt is proof of login too, and on the live ISO it is
+        # the ONLY evidence that reaches the serial: getty autologins, neither a
+        # "login:" prompt nor the "login on console as admin" marker is emitted,
+        # and the next thing on the wire is zsh's prompt. Matching only the first
+        # two failed a machine that had booted, pivoted and logged in correctly.
+        puts "\nOK: LOGIN-OK — at a shell prompt (automatic login)"
+    }
+    -re {login on console as admin} {
+        puts "\nOK: LOGIN-OK — launchd reached getty, which logged admin in"
+    }
+    "login:" {
+        send "admin\r"
+        expect {
+            timeout { puts "\nFAIL: no response after sending admin"; exit 1 }
+            "Login incorrect" { puts "\nFAIL: admin login rejected"; exit 1 }
+            "Password:" { send "\r"; exp_continue }
+            -re {[#%$] $} { puts "\nOK: LOGIN-OK — logged in as admin" }
+        }
+    }
 }
-
-# Stage 2: log in as root (passwordless from base) and confirm a shell + a UFS
-# root (direct disk boot, no live union pivot).
-send "root\r"
+send "\r"
+send "echo NB-SHELL-READY\r"
 expect {
-    timeout { puts "\nFAIL: no response after sending root"; exit 1 }
-    "Password:" { send "\r"; exp_continue }
-    "Login incorrect" { puts "\nFAIL: root login rejected"; exit 1 }
-    -re {[#%$] $} { puts "\nOK: at root shell prompt" }
+    timeout { puts "\nFAIL: no shell after login"; exit 1 }
+    "NB-SHELL-READY" { puts "\nOK: shell is responding" }
 }
-send "mount | grep ' / '\r"
+# Bracket the output with a sentinel and read until it arrives. Matching a bare
+# shell prompt here was a race: the previous command's prompt is still sitting in
+# expect's buffer, so on a slow arm64 guest the prompt matched before mount had
+# printed anything, the "on / (...)" line never reached the transcript, and the
+# noatime check below failed on an image that was in fact mounted correctly. The
+# quotes keep the echoed command line from matching the sentinel.
+send "mount | grep ' / '; echo MOUNT'-'REPORTED\r"
+set saw_root 0
 expect {
-    timeout { puts "\nWARN: mount produced no output" }
-    -re { on / \((ufs[^)]*)\)} { puts "\nOK: ROOT-IS-UFS — / is a ufs mount ($expect_out(1,string))" }
-    -re {[#%$] $} { }
+    timeout { puts "\nFAIL: mount printed nothing before the sentinel"; exit 1 }
+    -re {panic|Fatal trap|Fatal data abort} {
+        puts "\nFAIL: kernel panic after login, before mount reported"
+        exit 1
+    }
+    -re { on / \((ufs[^)]*)\)} {
+        set saw_root 1
+        puts "\nOK: ROOT-IS-UFS — / is a ufs mount ($expect_out(1,string))"
+        exp_continue
+    }
+    "MOUNT-REPORTED" { }
 }
-send "halt -p\r"
+if {$saw_root == 0} {
+    puts "\nFAIL: ROOT-IS-UFS — mount printed no ' on / (ufs...)' line"
+    exit 1
+}
+# admin is not root, and halt is root's to run.
+send "sudo halt -p\r"
 expect { timeout { } eof { } }
 puts "\nIMG-BOOT-DONE"
 EOF
@@ -118,12 +169,31 @@ expect -f "$EXP"
 rc=$?
 set -e
 
+# Did a console session start? Three accepted forms, because root being disabled
+# (nextbsd-overlays f9dcd5b) changed which of them reaches the serial:
+#   "login:"                   a getty prompt
+#   "login on console as ..."  getty autologin announced itself
+#   the shell prompt itself    on the live ISO this is the ONLY evidence -- getty
+#                              autologins and emits neither of the above
+# The prompt carries SGR escapes INSIDE it ("\033[32madmin\033[39m@\033[39mhost"),
+# so "admin@" never appears literally -- hence [^@]{0,12} rather than a bare
+# "admin@". Stripping the escapes first was the obvious alternative and is worse:
+# BSD tr does not honour '\033', so it silently did nothing and the pattern could
+# never fire. Verified against the real failing transcript, a plain escape-free
+# prompt, and a negative case containing "user@host".
+login_seen() {
+    grep -aqE "login:|login on console as admin|admin[^@]{0,12}@" "$1"
+}
+
 echo "==> verdict"
 # The OK `puts` lines go to expect's stdout, not the serial transcript ($LOG).
 # Assert against the getty login prompt in the transcript (launchd PID 1 reached
 # getty on the installed image).
-if ! grep -q "login:" "$LOG"; then
-    echo "FAIL: $ARCH disk image did not reach the login prompt (rc=$rc)"
+# Either a login prompt or an automatic login proves launchd got getty up.
+# Asserting only on "login:" would fail an image that logs admin in
+# automatically, which is the configured behaviour on a seeded image.
+if ! login_seen "$LOG"; then
+    echo "FAIL: $ARCH disk image did not reach a login (rc=$rc)"
     exit 1
 fi
 # / must carry noatime from launchd's own remount (nextbsd-userland#185), not
