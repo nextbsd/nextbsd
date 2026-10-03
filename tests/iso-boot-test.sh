@@ -1,33 +1,21 @@
 #!/bin/sh
-# iso-boot-test.sh — boot the LIVE ISO in qemu (UEFI via OVMF, -cdrom) and
-# verify the on-demand live-root assembly:
-#   loader preloads the mfsroot -> /rescue/init mounts the cd9660, vnode-mds
-#   rootfs.uzip (geom_uzip), unions a tmpfs over it, `sysctl vfs.pivot` adopts
-#   the union as / -> exec launchd -> getty login prompt.
+# iso-boot-test.sh — thin entry point onto the shared nextbsd-ci boot harness
+# (T4). Boots the freshly-built NextBSD-*.iso LIVE image (from the CD device:
+# NB_MEDIA=cd) to the getty login prompt, confirms a clean end-state, powers
+# off. Login-only (NB_LOGIN_ONLY=1): the live-ISO gate is "did this kernel
+# boot," not "do the userland markers pass."
 #
-# Success = we see the pivot marker ("vfs.pivot: / is now unionfs") AND the
-# login prompt. The full serial log is always dumped for diagnosis — this is
-# the feedback loop for iterating the live-root pipeline.
-#
-# Arch-agnostic: the qemu shape (binary, machine, UEFI firmware, NIC, CD
-# attachment, accel) comes from tests/qemu-arch.sh, which takes ARCH from the
-# environment or infers it from the NextBSD-<arch>-<date> ISO name.
-
+# The loader un-mute dance, the arch-aware qemu argv, login detection and
+# teardown all come from the shared harness now, not the in-repo loader.exp.inc
+# / qemu-arch.sh (deleted).
 set -eu
-
 ISO=${1:?usage: [ARCH=amd64|arm64] iso-boot-test.sh path/to/NextBSD-*.iso[.zip]}
 [ -f "$ISO" ] || { echo "ERROR: $ISO not found"; exit 1; }
-# The as-published name (NextBSD-<arch>-<date>.iso.zip) is what carries the arch;
-# $ISO is rewritten to the extracted scratch copy below.
-ARTIFACT=$ISO
 
 mkdir -p tests
-LOG=tests/iso-boot.log
-EXP=tests/iso-boot.exp
-: > "$LOG"
-
+# A zipped ISO is extracted to a raw live.iso first (the harness takes a raw image).
 case "$ISO" in
-*.zip)
+  *.zip)
     RAW=tests/live.iso
     echo "==> extracting $ISO -> $RAW"
     MEMBER=$(unzip -Z1 "$ISO" | grep -E '\.iso$' | head -1)
@@ -37,172 +25,14 @@ case "$ISO" in
     ;;
 esac
 
-. "$(dirname "$0")/qemu-arch.sh"
-qemu_arch_setup "$ISO" "$ARTIFACT"
+# Fetch the shared harness at the pinned lockstep tag (absent = first run).
+[ -d nextbsd-ci/.git ] || git clone --depth 1 --branch v0.2.1 \
+  https://github.com/nextbsd/nextbsd-ci.git nextbsd-ci
 
-echo "==> iso boot test: $ISO (arch=$ARCH)"
+echo "==> iso boot test: $ISO (arch=${ARCH:-amd64}) — shared harness, login-only, cd"
 ls -lh "$ISO"
 
-cat > "$EXP" <<'EOF'
-set timeout 600
-log_file -a tests/iso-boot.log
-log_user 1
-
-set accel_flags [split $env(ACCEL_FLAGS) " "]
-set net_args    [split $env(NET_ARGS) " "]
-set video_args  [split $env(VIDEO_ARGS) " "]
-set cd_args     [split $env(CD_ARGS) " "]
-
-eval spawn $env(QEMU) \
-    -m 4G \
-    -machine $env(MACHINE) \
-    -bios $env(FW) \
-    $accel_flags \
-    $cd_args \
-    $net_args \
-    $video_args \
-    -display none -serial stdio \
-    -no-reboot
-
-source tests/loader.exp.inc
-
-# Stage 0: loader autoboot -> OK prompt; enable serial console.
-loader_prompt 90
-loader_set "set console=comconsole"
-loader_set "set boot_serial=YES"
-loader_set "set comconsole_speed=115200"
-loader_set "set boot_multicons=YES"
-# boot VERBOSE: the shipped image sets boot_mutemsgs="YES" (nextbsd#363) which
-# mutes kernel console output — including the "vfs.pivot: / is now unionfs"
-# marker this harness sequences on. RB_VERBOSE (boot -v) bypasses the mute in
-# the kernel, so CI sees all markers while shipped images stay quiet.
-loader_boot "boot -v"
-
-# Stage 1: the live-root assembly markers from /rescue/init + vfs.pivot.
-set saw_init 0
-set saw_pivot 0
-expect {
-    timeout { puts "\nFAIL: live-root assembly markers not seen within 8 minutes"; exit 1 }
-    -re "init\\] NextBSD live root" { set saw_init 1; exp_continue }
-    "vfs.pivot: / is now unionfs" {
-        set saw_pivot 1
-        puts "\nOK: PIVOT-OK — / is now the writable unionfs (on-demand uzip + tmpfs)"
-    }
-    -re "panic|Fatal trap|vfs.pivot:.*not|mount_unionfs:.*fail|mdconfig:.*" {
-        puts "\nWARN: assembly diagnostic: $expect_out(0,string)"
-        exp_continue
-    }
-    "login:" {
-        if {$saw_pivot == 0} { puts "\nWARN: reached login WITHOUT a pivot marker (booted mfsroot or fell through?)" }
-    }
-}
-
-# Stage 2 and 3, in one block: launchd PID 1 came up on the union and we have
-# a shell.
-#
-# The third copy of the same fix. nextbsd-overlays f9dcd5b (#278) disabled root
-# the way Darwin does -- its password field went from empty to "*" -- so
-# sending "root" with an empty password is rejected. admin is the way in:
-# nss_directory_services gives an account carrying noPassword an EMPTY passwd
-# field for a privileged caller (dsdb_pack_passwd), and login is privileged.
-#
-# Waiting for "login:" and then deciding was two blocks, and that was the
-# second bug: where automatic login works there is no prompt, so the first
-# block waited out eight minutes and the second never ran. One block does both.
-expect {
-    timeout { puts "\nFAIL: neither a login prompt nor an automatic login in 8 minutes"; exit 1 }
-    -re "panic|Fatal trap" { puts "\nFAIL: kernel panic during boot"; exit 1 }
-    -re {[#%$] $} {
-        # A bare shell prompt is proof of login too, and on the live ISO it is
-        # the ONLY evidence that reaches the serial: getty autologins, neither a
-        # "login:" prompt nor the "login on console as admin" marker is emitted,
-        # and the next thing on the wire is zsh's prompt. Matching only the first
-        # two failed a machine that had booted, pivoted and logged in correctly.
-        puts "\nOK: LOGIN-OK — at a shell prompt (automatic login)"
-    }
-    -re {login on console as admin} {
-        puts "\nOK: LOGIN-OK — launchd reached getty on the live union, which logged admin in"
-    }
-    "login:" {
-        puts "\nOK: LOGIN-OK — launchd reached getty on the live union"
-        send "admin\r"
-        expect {
-            timeout { puts "\nFAIL: no response after sending admin"; exit 1 }
-            "Login incorrect" { puts "\nFAIL: admin login rejected"; exit 1 }
-            "Password:" { send "\r"; exp_continue }
-            -re {[#%$] $} { puts "\nOK: logged in as admin" }
-        }
-    }
-}
-send "\r"
-send "echo NB-SHELL-READY\r"
-expect {
-    timeout { puts "\nFAIL: no shell after login"; exit 1 }
-    "NB-SHELL-READY" { puts "\nOK: shell is responding" }
-}
-# Same sentinel as img-boot-test.sh, and for the same reason: a bare prompt match
-# here raced the previous command's leftover prompt.
-send "df / ; mount | grep ' / '; echo MOUNT'-'REPORTED\r"
-set saw_union 0
-expect {
-    timeout { puts "\nFAIL: df/mount printed nothing before the sentinel"; exit 1 }
-    -re {panic|Fatal trap|Fatal data abort} {
-        puts "\nFAIL: kernel panic after login, before df/mount reported"
-        exit 1
-    }
-    -re "unionfs" {
-        set saw_union 1
-        puts "\nOK: ROOT-IS-UNION — / is a unionfs mount"
-        exp_continue
-    }
-    "MOUNT-REPORTED" { }
-}
-if {$saw_union == 0} {
-    puts "\nFAIL: ROOT-IS-UNION — mount printed no unionfs line for /"
-    exit 1
-}
-send "sudo halt -p\r"
-expect { timeout { } eof { } }
-puts "\nISO-BOOT-DONE"
-EOF
-
-set +e
-expect -f "$EXP"
-rc=$?
-set -e
-
-# Did a console session start? Three accepted forms, because root being disabled
-# (nextbsd-overlays f9dcd5b) changed which of them reaches the serial:
-#   "login:"                   a getty prompt
-#   "login on console as ..."  getty autologin announced itself
-#   the shell prompt itself    on the live ISO this is the ONLY evidence -- getty
-#                              autologins and emits neither of the above
-# The prompt carries SGR escapes INSIDE it ("\033[32madmin\033[39m@\033[39mhost"),
-# so "admin@" never appears literally -- hence [^@]{0,12} rather than a bare
-# "admin@". Stripping the escapes first was the obvious alternative and is worse:
-# BSD tr does not honour '\033', so it silently did nothing and the pattern could
-# never fire. Verified against the real failing transcript, a plain escape-free
-# prompt, and a negative case containing "user@host".
-login_seen() {
-    grep -aqE "login:|login on console as admin|admin[^@]{0,12}@" "$1"
-}
-
-echo "==> verdict"
-# The PIVOT-OK/LOGIN-OK `puts` lines go to expect's stdout (captured by CI), not
-# the spawn transcript ($LOG). Assert against the markers that ARE in the serial
-# transcript: the kernel's vfs.pivot adoption + the getty login prompt (launchd
-# PID 1 reached getty on the union).
-if ! { grep -q "vfs.pivot: / is now unionfs" "$LOG" && login_seen "$LOG"; }; then
-    echo "FAIL: $ARCH live ISO did not complete the pivot+login sequence (rc=$rc)"
-    exit 1
-fi
-# launchctl's boot-time `mount -vat nonfs` must never touch / (#467). The
-# overlay ships no fstab (nextbsd-overlays#5), so the step is skipped; the
-# fwexec half also catches any other failed mount -a.
-if grep -aE 'Cannot union mount root filesystem|fwexec\(mount_tool' "$LOG"; then
-    echo "FAIL: FSTAB-ROOT-REMOUNT -- launchctl mount -a failed or tried to remount / (#467)"
-    exit 1
-fi
-echo "OK: FSTAB-ROOT-QUIET"
-echo "PASS: $ARCH live ISO booted — vfs.pivot to writable union + launchd reached the login prompt"
-exit 0
+# The live ISO has no virtio disk; the harness's NB_MEDIA=cd attaches it as the
+# virtio-scsi CD the virt machine boots from.
+ARCH=${ARCH:-amd64} NB_MEDIA=cd NB_LOGIN_ONLY=1 NB_BOOT_VERBOSE=1 NB_LOG=boot-test.log \
+  sh nextbsd-ci/harness/boot-test.sh "$ISO"
