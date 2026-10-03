@@ -765,7 +765,7 @@ makefs -t msdos \
 echo "==> mkimg: GPT disk image"
 # NextBSD-branded, datestamped image name — identical to the published
 # continuous asset, so the build output is uploaded + published as-is
-# (no rename). boot-test.sh discovers the member by its .img extension.
+# (no rename). img-boot-test.sh discovers the member by its .img extension.
 IMG_NAME="NextBSD-${ARCH}-${IMG_DATE}.img"
 # BIOS boot blocks (pmbr/gptboot) only exist on amd64; arm64 is UEFI-only, so
 # fall back to an ESP-only GPT there (same arch split the installer uses).
