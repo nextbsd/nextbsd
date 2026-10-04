@@ -324,8 +324,8 @@ jobs:
     # off cross-arch emulation, which is where qemu gets genuinely slow. The x86
     # runner also has /dev/kvm; the arm64 one does NOT, so its guest runs on
     # same-arch TCG — measured at ~1m50s per boot job, comparable to the
-    # KVM-accelerated amd64 leg. tests/qemu-arch.sh picks KVM whenever /dev/kvm
-    # shows up, so these legs get faster for free if that changes.
+    # KVM-accelerated amd64 leg. The shared nextbsd-ci harness (qemu-arch.sh)
+    # picks KVM whenever /dev/kvm shows up, so these legs get faster for free.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
@@ -397,9 +397,9 @@ jobs:
       - name: dump img boot serial log
         if: always()
         run: |
-          if [ -f tests/img-boot.log ]; then
-            echo "=== img boot serial log (tail) ==="
-            tail -200 tests/img-boot.log || true
+          if [ -f boot-test.log ]; then
+            echo "=== img boot serial log (tail; shared harness transcript) ==="
+            tail -200 boot-test.log || true
             echo "=== end log ==="
           fi
 
@@ -456,9 +456,9 @@ jobs:
       - name: dump live ISO serial log
         if: always()
         run: |
-          if [ -f tests/iso-boot.log ]; then
-            echo "=== live ISO serial log (tail 500) ==="
-            tail -500 tests/iso-boot.log || true
+          if [ -f boot-test.log ]; then
+            echo "=== live ISO serial log (tail 500; shared harness transcript) ==="
+            tail -500 boot-test.log || true
             echo "=== end serial log ==="
           fi
 
