@@ -27,7 +27,7 @@ case "$IMG" in
 esac
 
 # Fetch the shared harness at the pinned lockstep tag (absent = first run).
-[ -d nextbsd-ci/.git ] || git clone --depth 1 --branch v0.3.0 \
+[ -d nextbsd-ci/.git ] || git clone --depth 1 --branch v0.3.1 \
   https://github.com/nextbsd/nextbsd-ci.git nextbsd-ci
 
 echo "==> img boot test: $IMG (arch=${ARCH:-amd64}) — shared harness, login-only"

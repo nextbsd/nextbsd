@@ -12,13 +12,24 @@ on:
       - '**/*.md'
       - 'LICENSE'
       - 'NOTICE'
-  # Rebuild the ISO when the from-source base it ingests changes. Sent by
-  # nextbsd-freebsd-compat at the end of a successful main base build, which
-  # is itself triggered by the toolchain on a releng/15.0 update. Full chain:
-  # releng/15.0 -> toolchain -> compat -> (base-updated) -> nextbsd.
+  # Rebuild when a COMPONENT the image assembles from publishes a new
+  # `continuous` artifact. The CI image lays the component tarballs straight
+  # in (build.sh ASSEMBLY=artifacts), so the image is only as fresh as the
+  # newest component it ingests:
+  #   base-updated    nextbsd-freebsd-compat (base; itself triggered by the
+  #                    toolchain on a releng/15.0 update)
+  #   kernel-updated  nextbsd-kernel
+  #   kexts-updated   nextbsd-kernel-extensions (graphics-kexts/<arch>)
+  # (userland changes ride on nextbsd's own push/PR events: the userland repo
+  #  has no consumer-trigger of its own and nextbsd rebuilds cover it via the
+  #  schedule below.)
   repository_dispatch:
-    types: [base-updated]
+    types: [base-updated, kernel-updated, kexts-updated]
   workflow_dispatch:
+  # Backstop: even if a dispatch is missed, the CI image rebuilds on a fixed
+  # cadence so no lane is ever booting a stale component.
+  schedule:
+    - cron: '0 */12 * * *'
 
 permissions:
   contents: read
@@ -110,6 +121,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The shared image assembly (build.sh ASSEMBLY=artifacts calls
+      # nextbsd-ci/scripts/assemble-image.sh). Pinned to the release tag so the
+      # recipe does not drift with nextbsd-ci main. freebsd-vm rsyncs the whole
+      # workspace, so the checkout lands in the VM where build.sh finds it.
+      - name: checkout shared assembly (nextbsd-ci, pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: nextbsd/nextbsd-ci
+          ref: v0.3.1
+          path: nextbsd-ci
+
       - name: free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -155,6 +177,9 @@ jobs:
             export FREEBSD_VERSION=${{ matrix.freebsd }}
             export ARCH=${{ matrix.arch }}
             export IMG_DATE=${{ steps.meta.outputs.date }}
+            # CI images always assemble from the latest component artifacts,
+            # never from pkg (packages are gated release artifacts).
+            export ASSEMBLY=artifacts
             sh build.sh
 
       - name: checksum + summary
@@ -217,6 +242,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Shared image assembly (build.sh ASSEMBLY=artifacts) — see the build
+      # job above; rsynced into the VM with the workspace.
+      - name: checkout shared assembly (nextbsd-ci, pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: nextbsd/nextbsd-ci
+          ref: v0.3.1
+          path: nextbsd-ci
+
       - name: free disk space
         uses: jlumbroso/free-disk-space@main
         with:
@@ -241,7 +275,7 @@ jobs:
       - name: fetch the board kernel
         run: |
           set -eu
-          URL=https://github.com/nextbsd-redux/nextbsd-kernel/releases/download/continuous/rpi500-kernel8-arm64.img
+          URL=https://github.com/nextbsd/nextbsd-kernel/releases/download/continuous/rpi500-kernel8-arm64.img
           curl -fSL --retry 3 -o kernel8.img "$URL"
           ls -l kernel8.img
           MAGIC=$(dd if=kernel8.img bs=1 skip=56 count=4 2>/dev/null | od -An -tx1 | tr -d ' \n')
@@ -270,6 +304,9 @@ jobs:
             export BOARD=rpi500
             export KERNEL8=$PWD/kernel8.img
             export IMG_DATE=${{ steps.meta.outputs.date }}
+            # CI images always assemble from the latest component artifacts,
+            # never from pkg (packages are gated release artifacts).
+            export ASSEMBLY=artifacts
             sh build.sh
 
       - name: checksum + summary
