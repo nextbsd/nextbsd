@@ -129,7 +129,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: nextbsd/nextbsd-ci
-          ref: v0.3.3
+          ref: v0.3.4
           path: nextbsd-ci
 
       - name: free disk space
@@ -248,7 +248,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: nextbsd/nextbsd-ci
-          ref: v0.3.3
+          ref: v0.3.4
           path: nextbsd-ci
 
       - name: free disk space
