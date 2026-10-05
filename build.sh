@@ -1,22 +1,32 @@
 #!/bin/sh
-# build.sh — assemble bootable NextBSD images by INSTALLING the packages.
+# build.sh — assemble bootable NextBSD images.
 #
-# The entire OS now comes from the nextbsd-pkg flat repo: one `pkg install
-# NextBSD-everything` lays down the freebsd-compat base + kernel + Darwin
-# userland (incl. the LaunchDaemons, bundled into the NextBSD-userland package)
-# + kexts. The user-editable /etc config (accounts, sshd_config, pam.d, ttys,
-# ...) is NOT package-owned — it is seeded from the nextbsd-overlays repo below
-# so `pkg upgrade` can never clobber it. There is NO in-chroot compile — src/ is
-# gone — and no tar-extract/hand-drop of base/kernel/kexts.
+# ASSEMBLY selects how the rootfs gets the OS:
+#   artifacts (default — every CI lane)
+#       Lay the component `continuous` artifacts straight into the rootfs:
+#       base + kernel + userland + contrib + kexts tarballs, the same five
+#       components the nextbsd-pkg repo repackages. No pkg anywhere in the
+#       CI image: packages are gated release artifacts, and a CI gate must
+#       test the artifacts that were just built, not a pkg repo whose
+#       rebuild timing is not ours.
+#   pkg (release images only)
+#       One `pkg install NextBSD-everything` from the nextbsd-pkg flat repo.
+#       This is the user-facing assembly: it leaves a pkg database in the
+#       image so an installed system can `pkg upgrade`.
 #
-# Runs inside a FreeBSD 15.1 VM (vmactions) — a REAL FreeBSD host, so pkg(8) is
-# native and installs FreeBSD:15 packages with no ABI/OSVERSION hackery. The
+# Either way: the user-editable /etc config (accounts, sshd_config, pam.d,
+# ttys, ...) is NOT OS-owned — it is seeded from the nextbsd-overlays repo
+# below so `pkg upgrade` can never clobber it. There is NO in-chroot compile
+# — src/ is gone — and both modes are host-driven tar/makefs.
+#
+# Runs inside a FreeBSD 15.1 VM (vmactions) — a REAL FreeBSD host. The
 # per-arch lanes (amd64, aarch64) run as independent parallel jobs.
 #
-# Everything is host-driven (pkg -r, pwd_mkdb -d, cap_mkdb <target>) rather than
-# chroot'd, so the aarch64 image assembles in the same x86 VM without qemu-user
-# (the NextBSD-* packages ship no exec'ing post-install scripts; makefs/mkuzip/
-# mkimg are arch-agnostic).
+# Everything is host-driven (tar/pkg -r, pwd_mkdb -d, cap_mkdb <target>) rather
+# than chroot'd, so the aarch64 image assembles in the same x86 VM without
+# qemu-user. Neither mode exec's anything from the staged tree: pkg installs run
+# host-side with -r, and artifact layout is plain tar extraction; makefs/mkuzip/
+# mkimg are arch-agnostic.
 #
 # Produces:
 #   out/NextBSD-<arch>-<date>.img.zip   GPT disk image (BIOS+UEFI, rw UFS root)
@@ -78,7 +88,22 @@ DIST=$ROOT/distfiles
 RF=$WORK/rootfs
 MIRROR="https://download.freebsd.org/ftp/releases/${ARCH}/${FREEBSD_VERSION}-RELEASE"
 # nextbsd-pkg flat repo: per-arch rolling release tag (continuous-<arch>).
-PKG_REPO_URL="https://github.com/nextbsd-redux/nextbsd-pkg/releases/download/continuous-${ARCH}"
+# PKG assembly mode only (release images); CI images never use pkg — see
+# ASSEMBLY below.
+PKG_REPO_URL="https://github.com/nextbsd/nextbsd-pkg/releases/download/continuous-${ARCH}"
+
+# How the rootfs gets the OS (see header): `artifacts` = CI (lay the component
+# continuous tarballs straight in, no pkg); `pkg` = release (pkg install
+# NextBSD-everything).
+ASSEMBLY=${ASSEMBLY:-artifacts}
+case "$ASSEMBLY" in
+  artifacts|pkg) ;;
+  *)
+    echo "ERROR: unknown ASSEMBLY='$ASSEMBLY' (expected 'artifacts' or 'pkg')" >&2
+    exit 1
+    ;;
+esac
+echo "==> assembly mode: $ASSEMBLY"
 
 mkdir -p "$WORK" "$OUT" "$DIST"
 # A prior run's rootfs carries schg (system-immutable) flags; clear before rm.
@@ -100,20 +125,82 @@ mkdir -p "$WORK/freebsd-src"
 tar -xJf "$DIST/src.txz" -C "$WORK/freebsd-src"
 
 # ---------------------------------------------------------------------------
-# 2. Install the whole OS from packages into the rootfs.
+# 2. Lay the whole OS into the rootfs (mode-selected, see header).
 # ---------------------------------------------------------------------------
 mkdir -p "$RF"
 
-# BOOTSTRAP pkg TLS: rehash the build VM's CA store so pkg can fetch the NextBSD
-# flat repo over https (GitHub release assets). certctl ships in the base VM.
+# BOOTSTRAP TLS: rehash the build VM's CA store so fetch/pkg can talk https
+# to GitHub release assets. certctl ships in the base VM; both modes need it.
 certctl rehash 2>/dev/null || true
 
-# ISOLATE to ONLY the NextBSD repo. The vmactions VM ships enabled FreeBSD
-# pkgbase/ports repos that are SIGNED with keys we don't have (they error
-# "Error loading trusted certificates" and jam the SAT solver). Point pkg at a
-# private REPOS_DIR that contains just the unsigned NextBSD flat repo.
-NBREPO="$WORK/nbrepo"; mkdir -p "$NBREPO"
-cat > "$NBREPO/NextBSD.conf" <<CONF
+if [ "$ASSEMBLY" = artifacts ]; then
+    # --- ARTIFACTS (CI): the five component `continuous` tarballs -----------
+    # The same components — and the same placement — that nextbsd-pkg's own
+    # build.sh uses, taken straight from the source repos' rolling `continuous`
+    # release tags, without the pkg repack. base is laid first and userland
+    # after: the base build strips the base<->userland collisions upstream
+    # (nextbsd-freebsd-compat scripts/strip-collisions.sh), so a plain
+    # extract order is deterministic and last-writer-wins is by design.
+    ART="$WORK/art"; mkdir -p "$ART"
+    C=continuous
+    echo "==> fetching component ${C} artifacts ($ARCH) into $ART"
+    fetch -o "$ART/nextbsd-base-${ARCH}.tar.gz" \
+        "https://github.com/nextbsd/nextbsd-freebsd-compat/releases/download/${C}/nextbsd-base-${ARCH}.tar.gz"
+    fetch -o "$ART/nextbsd-kernel-${ARCH}.tar.gz" \
+        "https://github.com/nextbsd/nextbsd-kernel/releases/download/${C}/nextbsd-kernel-${ARCH}.tar.gz"
+    fetch -o "$ART/nextbsd-userland-${ARCH}.tar.gz" \
+        "https://github.com/nextbsd/nextbsd-userland/releases/download/${C}/nextbsd-userland-${ARCH}.tar.gz"
+    fetch -o "$ART/nextbsd-contrib-${ARCH}.tar.gz" \
+        "https://github.com/nextbsd/nextbsd-contrib/releases/download/${C}/nextbsd-contrib-${ARCH}.tar.gz"
+    # kexts are best-effort: graphics is per-arch; intelwifi/intelethernet/
+    # nvidia exist only for amd64. A kext build in flight (or a 404 while a
+    # tag rolls) must not fail the image — the kext lanes assert what they
+    # need on boot.
+    fetch -o "$ART/graphics-kexts-${ARCH}.tar.gz" \
+        "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/graphics-kexts-${ARCH}.tar.gz" \
+        || echo "WARN: no graphics-kexts-${ARCH} artifact; image ships without graphics kexts" >&2
+    if [ "$ARCH" = amd64 ]; then
+        for n in intelwifi-kext intelethernet-kext nvidia-kexts; do
+            fetch -o "$ART/${n}.tar.gz" \
+                "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/${n}.tar.gz" \
+                || echo "WARN: no ${n} artifact; continuing without it" >&2
+        done
+    fi
+
+    # The SHARED assembly (nextbsd-ci, checked out into the workspace by
+    # build.yml at a pinned release tag) does the rest: stage the five
+    # components into $RF, the Apple /private layout, the nextbsd-overlays
+    # /etc seed, kext auth, offline DBs, cert bundle, ownership. One recipe,
+    # all consumers (userland PR lane, kext lane) share it.
+    #
+    # SKIP_ASSEMBLE: this lane keeps its OWN media tail (the 1.5G rw root,
+    # the live ISO, the rpi500 image) on the staged rootfs, so the script
+    # stages + fixes up and stops before makefs/mkimg.
+    #
+    # NOTE: no pkg database in a CI rootfs — that is the point of this mode
+    # (the image is a 1:1 snapshot of the artifacts, nothing more).
+    ASM="$ROOT/nextbsd-ci/scripts/assemble-image.sh"
+    [ -f "$ASM" ] || { echo "ERROR: shared assembly $ASM missing (build.yml must check out nextbsd-ci at the pinned tag)" >&2; exit 1; }
+    OVL="$WORK/nextbsd-overlays"
+    rm -rf "$OVL"; mkdir -p "$OVL"
+    git clone --depth 1 https://github.com/nextbsd/nextbsd-overlays "$OVL"
+    export WORK RF
+    export BASE_TGZ="$ART/nextbsd-base-${ARCH}.tar.gz" \
+           KERNEL_TGZ="$ART/nextbsd-kernel-${ARCH}.tar.gz" \
+           USERLAND_TGZ="$ART/nextbsd-userland-${ARCH}.tar.gz" \
+           CONTRIB_TGZ="$ART/nextbsd-contrib-${ARCH}.tar.gz" \
+           MODULES_TGZ="$(ls "$ART"/*kext*.tar.gz 2>/dev/null | tr '\n' ' ')" \
+           SEED_ROOTFS="$OVL/rootfs" \
+           SKIP_ASSEMBLE=1
+    sh "$ASM"
+else
+    # --- PKG (release): the user-facing install ------------------------------
+    # ISOLATE to ONLY the NextBSD repo. The vmactions VM ships enabled FreeBSD
+    # pkgbase/ports repos that are SIGNED with keys we don't have (they error
+    # "Error loading trusted certificates" and jam the SAT solver). Point pkg
+    # at a private REPOS_DIR that contains just the unsigned NextBSD flat repo.
+    NBREPO="$WORK/nbrepo"; mkdir -p "$NBREPO"
+    cat > "$NBREPO/NextBSD.conf" <<CONF
 NextBSD: {
   url: "${PKG_REPO_URL}",
   enabled: yes,
@@ -121,27 +208,36 @@ NextBSD: {
 }
 CONF
 
-# Install into $RF. `-r` sets the install root (host-driven, not chroot).
-#   ABI=FreeBSD:15:<arch>  — for arm64 we cross-install aarch64 packages in the
-#                            x86 VM; amd64 matches the VM natively.
-#   OSVERSION=$(uname -K)  — pkg requires OSVERSION when ABI is set; the VM
-#                            kernel (15.1) is the right value for both arches.
-#   IGNORE_OSVERSION       — the rolling snapshot's stamp shouldn't gate install.
-export ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes
-export ABI="$PKG_ABI" OSVERSION="$(uname -K)"
-PKG="pkg -r $RF -o REPOS_DIR=$NBREPO"
-echo "==> pkg update + install NextBSD-everything into $RF (ABI=$ABI OSVERSION=$OSVERSION)"
-$PKG update -f
-$PKG install -y NextBSD-everything
-# Fail loudly if the install laid down nothing (empty rootfs -> later steps die
-# with confusing errors). The user /etc config is seeded from nextbsd-overlays
-# below (deliberately NOT package-owned), so guard on a package-core binary.
-[ -x "$RF/sbin/launchd" ] || { echo "ERROR: NextBSD-everything install produced no /sbin/launchd" >&2; exit 1; }
+    # Install into $RF. `-r` sets the install root (host-driven, not chroot).
+    #   ABI=FreeBSD:15:<arch>  — for arm64 we cross-install aarch64 packages in
+    #                            the x86 VM; amd64 matches the VM natively.
+    #   OSVERSION=$(uname -K)  — pkg requires OSVERSION when ABI is set; the
+    #                            VM kernel (15.1) is the right value for both.
+    #   IGNORE_OSVERSION       — the rolling snapshot's stamp shouldn't gate.
+    export ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes
+    export ABI="$PKG_ABI" OSVERSION="$(uname -K)"
+    PKG="pkg -r $RF -o REPOS_DIR=$NBREPO"
+    echo "==> pkg update + install NextBSD-everything into $RF (ABI=$ABI OSVERSION=$OSVERSION)"
+    $PKG update -f
+    $PKG install -y NextBSD-everything
+fi
 
+# Fail loudly if the assembly laid down nothing (empty rootfs -> later steps
+# die with confusing errors). The user /etc config is seeded from
+# nextbsd-overlays below (deliberately NOT package-owned), so guard on a
+# core binary both modes must provide.
+[ -x "$RF/sbin/launchd" ] || { echo "ERROR: $ASSEMBLY assembly produced no /sbin/launchd" >&2; exit 1; }
+
+# Apple /private layout + runtime skeleton + the nextbsd-overlays /etc seed
+# (steps 3 + 3b). In PKG mode build.sh does them (the package ships
+# /private/etc but not the symlinks, and the admin-owned /etc is deliberately
+# NOT package-owned so `pkg upgrade` can never clobber it). In ARTIFACTS mode
+# the shared assembly script (step 2) has already done all of it — the
+# /private symlinks exist, so re-running the layout here would fail on
+# `ln -s` — hence the mode gate.
+if [ "$ASSEMBLY" = pkg ]; then
 # ---------------------------------------------------------------------------
 # 3. Apple /private layout + runtime skeleton.
-#    The package ships /private/etc (master.passwd, plists, ...) but NOT the
-#    /etc,/var,/tmp -> private symlinks, and not the mutable /var runtime.
 # ---------------------------------------------------------------------------
 mkdir -p "$RF/private"
 for _pd in etc var tmp; do
@@ -160,7 +256,7 @@ done
 #     the NextBSD-userland package's overlay/ for exactly this reason.)
 OVL="$WORK/nextbsd-overlays"
 rm -rf "$OVL"
-git clone --depth 1 https://github.com/nextbsd-redux/nextbsd-overlays "$OVL"
+git clone --depth 1 https://github.com/nextbsd/nextbsd-overlays "$OVL"
 cp -R "$OVL/rootfs/." "$RF/"
 chmod 0600 "$RF/private/etc/master.passwd"
 # sudo refuses a sudoers that is not mode 0440; git stores the overlay's as 0644.
@@ -180,6 +276,7 @@ mkdir -p "$RF/usr/share/locale"
 : > "$RF/var/run/utx.active"; : > "$RF/var/log/utx.lastlogin"; : > "$RF/var/log/utx.log"
 chmod 644 "$RF/var/run/utx.active" "$RF/var/log/utx.lastlogin" "$RF/var/log/utx.log"
 mkdir -p "$RF/root"; chmod 0700 "$RF/root"
+fi
 
 # ---------------------------------------------------------------------------
 # 4. Regenerate /etc databases from the package's master.passwd/login.conf.
@@ -193,6 +290,11 @@ pwd_mkdb -p -d "$RF/etc" "$RF/etc/master.passwd"
 # CA trust store for the SHIPPED image (best-effort; the package ships cert.pem).
 env DESTDIR="$RF" certctl rehash 2>/dev/null || true
 
+# The three pkg-specific blocks that follow (5: in-image repo config, 5b:
+# pkglist bake, 5b: residue clean) run ONLY in pkg assembly mode. An
+# artifacts CI image carries no pkg database, no in-image repo config, and
+# no cached tarballs — all three are skipped there.
+if [ "$ASSEMBLY" = pkg ]; then
 # ---------------------------------------------------------------------------
 # 5. pkg repos in the SHIPPED image (arch-dynamic) so a user on the installed
 #    system can `pkg install` out of the box. Exactly TWO repos, deliberately:
@@ -280,6 +382,9 @@ fi
 echo "==> pkg clean: drop cached tarballs + fetched repository catalogues"
 pkg -r "$RF" clean -a -y || true
 rm -rf "$RF/private/var/db/pkg/repos"
+else
+    echo "==> artifacts mode: no pkg database, no in-image repo config, no residue to clean"
+fi
 
 # ---------------------------------------------------------------------------
 # 6. Version identity (single source of truth = $IMG_DATE).
