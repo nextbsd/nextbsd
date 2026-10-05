@@ -84,7 +84,7 @@ entirely differently than those original solutions.
    on `em0`, syslog come up, and the `login:` prompt land. Log in
    as `root` (no password, hit Enter).
 
-[release]: https://github.com/nextbsd-redux/nextbsd/releases/tag/continuous
+[release]: https://github.com/nextbsd/nextbsd/releases/tag/continuous
 
 ## Networking just works
 
@@ -191,10 +191,10 @@ that gap is exactly what the command exists to show.
 NextBSD is assembled from a small chain of repositories, each publishing a
 rolling `continuous` release that the next stage ingests:
 
-- **[nextbsd-kernel](https://github.com/nextbsd-redux/nextbsd-kernel)** —
+- **[nextbsd-kernel](https://github.com/nextbsd/nextbsd-kernel)** —
   the NextBSD kernel, built as a patch + overlay set on top of FreeBSD
   (the FreeBSD source tree is never forked in place).
-- **[nextbsd-freebsd-compat](https://github.com/nextbsd-redux/nextbsd-freebsd-compat)** —
+- **[nextbsd-freebsd-compat](https://github.com/nextbsd/nextbsd-freebsd-compat)** —
   the curated FreeBSD-source base userland, built from a srclist.
 - **[nextbsd-kernel-extensions](https://github.com/nextbsd/nextbsd-kernel-extensions)** —
   driver kexts (KPI-matched to the kernel).
@@ -226,7 +226,7 @@ each with a matching `.sha256`. The latest is always at that tag.
 - **[PORTING.md](PORTING.md)** — full technical history of
   what's been ported and why. Phase-by-phase, with per-component
   rationale.
-- **[Issues](https://github.com/nextbsd-redux/nextbsd/issues)**
+- **[Issues](https://github.com/nextbsd/nextbsd/issues)**
   — open work items, scoping questions, planned ports.
 
 ## License
