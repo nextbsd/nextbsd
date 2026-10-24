@@ -218,6 +218,21 @@ CONF
     export ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes
     export ABI="$PKG_ABI" OSVERSION="$(uname -K)"
     PKG="pkg -r $RF -o REPOS_DIR=$NBREPO"
+
+    # Apple /private layout BEFORE anything is installed: etc, var and tmp
+    # are relative symlinks into private/ from the start, as on Darwin. pkg's
+    # database and cache then land in private/var through /var, and a package
+    # that ships /private/... (NextBSD-userland ships
+    # /private/var/log/com.apple.launchd) lands in the same directories.
+    # Laying the tree first and moving var into private/ afterwards nested
+    # it as private/var/var once a package had created private/var, which
+    # stranded the package database there: the image's `pkg info` listed
+    # only pkg, and the 101 MiB package cache escaped step 5b's clean.
+    mkdir -p "$RF/private/etc" "$RF/private/var" "$RF/private/tmp"
+    for _pd in etc var tmp; do
+        ln -s "private/$_pd" "$RF/$_pd"
+    done
+
     echo "==> pkg update + install NextBSD-everything into $RF (ABI=$ABI OSVERSION=$OSVERSION)"
     $PKG update -f
     $PKG install -y NextBSD-everything
@@ -229,26 +244,16 @@ fi
 # core binary both modes must provide.
 [ -x "$RF/sbin/launchd" ] || { echo "ERROR: $ASSEMBLY assembly produced no /sbin/launchd" >&2; exit 1; }
 
-# Apple /private layout + runtime skeleton + the nextbsd-overlays /etc seed
-# (steps 3 + 3b). In PKG mode build.sh does them (the package ships
-# /private/etc but not the symlinks, and the admin-owned /etc is deliberately
-# NOT package-owned so `pkg upgrade` can never clobber it). In ARTIFACTS mode
-# the shared assembly script (step 2) has already done all of it — the
-# /private symlinks exist, so re-running the layout here would fail on
-# `ln -s` — hence the mode gate.
+# Runtime skeleton + the nextbsd-overlays /etc seed (steps 3 + 3b). In PKG
+# mode build.sh does them (the /private symlinks were laid in step 2, before
+# pkg ran, and the admin-owned /etc is deliberately NOT package-owned so
+# `pkg upgrade` can never clobber it). In ARTIFACTS mode the shared assembly
+# script (step 2) has already done all of it, hence the mode gate.
 if [ "$ASSEMBLY" = pkg ]; then
 # ---------------------------------------------------------------------------
-# 3. Apple /private layout + runtime skeleton.
+# 3. Runtime skeleton. (The /private layout itself is laid in step 2,
+#    before pkg installs anything.)
 # ---------------------------------------------------------------------------
-mkdir -p "$RF/private"
-for _pd in etc var tmp; do
-    if [ -d "$RF/$_pd" ] && [ ! -L "$RF/$_pd" ]; then
-        mv "$RF/$_pd" "$RF/private/$_pd"
-    else
-        mkdir -p "$RF/private/$_pd"
-    fi
-    ln -s "private/$_pd" "$RF/$_pd"
-done
 
 # 3b. Seed the pkg-free, admin-owned /etc + loader fragment from nextbsd-overlays.
 #     These are laid down by the assembler, NOT any package, so `pkg upgrade`
@@ -361,7 +366,7 @@ fi
 #         does, so they have to go by hand.
 #
 #     Both of those are the pkg-visible paths; on disk they live under
-#     private/var, since step 3 made /var a relative symlink -> private/var.
+#     private/var, since step 2 made /var a relative symlink -> private/var.
 #     `pkg -r` walks that symlink (only a *trailing* symlink wouldn't be
 #     followed), so the clean below resolves to private/var/cache/pkg; the rm
 #     names private/ explicitly, as the rest of this script does.
