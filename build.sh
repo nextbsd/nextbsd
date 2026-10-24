@@ -387,6 +387,10 @@ fi
 # ---------------------------------------------------------------------------
 echo "==> pkg clean: drop cached tarballs + fetched repository catalogues"
 pkg -r "$RF" clean -a -y || true
+# pkg clean leaves anything it does not recognise as its own (and its failure
+# is ignored above), so empty the cache directory itself: no downloaded
+# package ships in the image. The directory stays, as pkg expects it.
+find "$RF/private/var/cache/pkg" -mindepth 1 -delete 2>/dev/null || true
 rm -rf "$RF/private/var/db/pkg/repos"
 else
     echo "==> artifacts mode: no pkg database, no in-image repo config, no residue to clean"
