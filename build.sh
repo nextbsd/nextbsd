@@ -155,19 +155,19 @@ if [ "$ASSEMBLY" = artifacts ]; then
         "https://github.com/nextbsd/nextbsd-userland/releases/download/${C}/nextbsd-userland-${ARCH}.tar.gz"
     fetch -o "$ART/nextbsd-contrib-${ARCH}.tar.gz" \
         "https://github.com/nextbsd/nextbsd-contrib/releases/download/${C}/nextbsd-contrib-${ARCH}.tar.gz"
-    # kexts are best-effort: graphics is per-arch; intelwifi/intelethernet
-    # exist only for amd64. A kext build in flight (or a 404 while a tag
-    # rolls) must not fail the image — the kext lanes assert what they need
-    # on boot. NVIDIA (amd64) comes from its own repo (nextbsd/nextbsd#548)
-    # and is required: no image ships without it.
+    # kexts are required: graphics is per-arch; intelwifi/intelethernet and
+    # NVIDIA exist only for amd64. NVIDIA comes from its own repo
+    # (nextbsd/nextbsd#548), the rest from nextbsd-kernel-extensions-graphics.
+    # A missing asset fails the build instead of shipping an image without
+    # it (nextbsd/nextbsd#552).
     fetch -o "$ART/graphics-kexts-${ARCH}.tar.gz" \
-        "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/graphics-kexts-${ARCH}.tar.gz" \
-        || echo "WARN: no graphics-kexts-${ARCH} artifact; image ships without graphics kexts" >&2
+        "https://github.com/nextbsd/nextbsd-kernel-extensions-graphics/releases/download/${C}/graphics-kexts-${ARCH}.tar.gz" \
+        || { echo "ERROR: no graphics-kexts-${ARCH} artifact from nextbsd-kernel-extensions-graphics" >&2; exit 1; }
     if [ "$ARCH" = amd64 ]; then
         for n in intelwifi-kext intelethernet-kext; do
             fetch -o "$ART/${n}.tar.gz" \
-                "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/${n}.tar.gz" \
-                || echo "WARN: no ${n} artifact; continuing without it" >&2
+                "https://github.com/nextbsd/nextbsd-kernel-extensions-graphics/releases/download/${C}/${n}.tar.gz" \
+                || { echo "ERROR: no ${n} artifact from nextbsd-kernel-extensions-graphics" >&2; exit 1; }
         done
         fetch -o "$ART/nvidia-kexts-amd64.tar.gz" \
             "https://github.com/nextbsd/nextbsd-kernel-extensions-nvidia/releases/download/${C}/nvidia-kexts-amd64.tar.gz" \
@@ -621,20 +621,19 @@ if [ "$BOARD" = rpi500 ]; then
     # mounted at install time nor in any package's file list. The image build
     # is the only thing that writes here, so it stages them.
     #
-    # They come from nextbsd-kernel-extensions' continuous release, where they
+    # They come from nextbsd-kernel-extensions-graphics' continuous release, where they
     # are published alongside the kexts, so an overlay stays versioned with the
     # driver it enables -- the two must agree about the node's compatible
     # string.
     #
-    # Missing overlays are NOT fatal: the image still boots, the driver simply
-    # cannot bind. That is the pre-#429 behaviour, so a fetch failure degrades
-    # to it rather than breaking the build.
+    # Missing overlays are fatal (nextbsd/nextbsd#552): the image would still
+    # boot, but the KMS drivers could not bind, and nothing else would notice.
     _ovl="$DIST/rpi5-overlays.tar.gz"
     if [ ! -f "$_ovl" ]; then
-        echo "==> fetching rpi5-overlays.tar.gz from nextbsd-kernel-extensions"
+        echo "==> fetching rpi5-overlays.tar.gz from nextbsd-kernel-extensions-graphics"
         fetch -o "$_ovl" \
-            "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/continuous/rpi5-overlays.tar.gz" \
-            || echo "WARNING: no overlays asset; KMS drivers will not bind (nextbsd#429)" >&2
+            "https://github.com/nextbsd/nextbsd-kernel-extensions-graphics/releases/download/continuous/rpi5-overlays.tar.gz" \
+            || { echo "ERROR: no rpi5-overlays.tar.gz from nextbsd-kernel-extensions-graphics; KMS drivers would not bind (nextbsd#429)" >&2; exit 1; }
     fi
     if [ -s "$_ovl" ]; then
         mkdir -p "$BOOTSTAGE/overlays"
@@ -717,7 +716,7 @@ hdmi_force_hotplug=1
 # the colour channels.
 #
 # The intent is that KMS owns the display instead, now that VideoCoreKMS
-# autoloads (nextbsd-kernel-extensions#185) -- at which point the firmware's
+# autoloads (nextbsd-kernel-extensions-graphics#185) -- at which point the firmware's
 # choice of depth stops mattering because nothing is drawing into its
 # framebuffer.
 #
@@ -755,7 +754,7 @@ hdmi_force_hotplug=1
 # nextbsd-fkms is deliberately NOT enabled. It brings up the firmware-KMS node,
 # which VideoCoreKMS.kext binds -- and firmware KMS cannot program a plane on
 # 2712, because the firmware does not service SET_PLANE
-# (nextbsd-kernel-extensions#48, measured). No planes means no hardware cursor.
+# (nextbsd-kernel-extensions-graphics#48, measured). No planes means no hardware cursor.
 #
 # VideoCore6KMS.kext drives the same display directly and does not need that
 # node. The two must never both be loaded, since they drive the same hardware,
@@ -789,7 +788,7 @@ dtoverlay=nextbsd-v3d
 #
 # Enabled, deliberately, even though vc4_kms.ko is not packaged yet: the driver
 # is under active development on this hardware
-# (nextbsd-kernel-extensions#51) and the nodes have to be enabled for it to
+# (nextbsd-kernel-extensions-graphics#51) and the nodes have to be enabled for it to
 # bind at all. Shipping it disabled would mean hand-editing this file on the
 # FAT32 partition after every image rebuild.
 #
