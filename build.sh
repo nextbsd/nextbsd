@@ -155,19 +155,23 @@ if [ "$ASSEMBLY" = artifacts ]; then
         "https://github.com/nextbsd/nextbsd-userland/releases/download/${C}/nextbsd-userland-${ARCH}.tar.gz"
     fetch -o "$ART/nextbsd-contrib-${ARCH}.tar.gz" \
         "https://github.com/nextbsd/nextbsd-contrib/releases/download/${C}/nextbsd-contrib-${ARCH}.tar.gz"
-    # kexts are best-effort: graphics is per-arch; intelwifi/intelethernet/
-    # nvidia exist only for amd64. A kext build in flight (or a 404 while a
-    # tag rolls) must not fail the image — the kext lanes assert what they
-    # need on boot.
+    # kexts are best-effort: graphics is per-arch; intelwifi/intelethernet
+    # exist only for amd64. A kext build in flight (or a 404 while a tag
+    # rolls) must not fail the image — the kext lanes assert what they need
+    # on boot. NVIDIA (amd64) comes from its own repo (nextbsd/nextbsd#548)
+    # and is required: no image ships without it.
     fetch -o "$ART/graphics-kexts-${ARCH}.tar.gz" \
         "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/graphics-kexts-${ARCH}.tar.gz" \
         || echo "WARN: no graphics-kexts-${ARCH} artifact; image ships without graphics kexts" >&2
     if [ "$ARCH" = amd64 ]; then
-        for n in intelwifi-kext intelethernet-kext nvidia-kexts; do
+        for n in intelwifi-kext intelethernet-kext; do
             fetch -o "$ART/${n}.tar.gz" \
                 "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/${n}.tar.gz" \
                 || echo "WARN: no ${n} artifact; continuing without it" >&2
         done
+        fetch -o "$ART/nvidia-kexts-amd64.tar.gz" \
+            "https://github.com/nextbsd/nextbsd-kernel-extensions-nvidia/releases/download/${C}/nvidia-kexts-amd64.tar.gz" \
+            || { echo "ERROR: no nvidia-kexts-amd64 artifact from nextbsd-kernel-extensions-nvidia" >&2; exit 1; }
     fi
 
     # The SHARED assembly (nextbsd-ci, expected at $ROOT/nextbsd-ci) does the
