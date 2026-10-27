@@ -196,8 +196,11 @@ rolling `continuous` release that the next stage ingests:
   (the FreeBSD source tree is never forked in place).
 - **[nextbsd-freebsd-compat](https://github.com/nextbsd/nextbsd-freebsd-compat)** —
   the curated FreeBSD-source base userland, built from a srclist.
-- **[nextbsd-kernel-extensions](https://github.com/nextbsd/nextbsd-kernel-extensions)** —
-  driver kexts (KPI-matched to the kernel).
+- **[nextbsd-kernel-extensions-graphics](https://github.com/nextbsd/nextbsd-kernel-extensions-graphics)** —
+  graphics kexts (drm-kmod), plus IntelWiFi and IntelEthernet for now
+  (KPI-matched to the kernel).
+- **[nextbsd-kernel-extensions-nvidia](https://github.com/nextbsd/nextbsd-kernel-extensions-nvidia)** —
+  the NVIDIA kexts and userland (amd64).
 - **this repo** — assembles the bootable image/ISO: it lays the from-source
   base, builds the Darwin-source userland and the Mach/launchd stack on top,
   ingests the kernel + driver kexts, and packages a GPT disk image (BIOS +
