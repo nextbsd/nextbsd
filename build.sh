@@ -155,20 +155,18 @@ if [ "$ASSEMBLY" = artifacts ]; then
         "https://github.com/nextbsd/nextbsd-userland/releases/download/${C}/nextbsd-userland-${ARCH}.tar.gz"
     fetch -o "$ART/nextbsd-contrib-${ARCH}.tar.gz" \
         "https://github.com/nextbsd/nextbsd-contrib/releases/download/${C}/nextbsd-contrib-${ARCH}.tar.gz"
-    # kexts are required: graphics is per-arch; intelwifi/intelethernet and
-    # NVIDIA exist only for amd64. NVIDIA comes from its own repo
-    # (nextbsd/nextbsd#548), the rest from nextbsd-kernel-extensions-graphics.
+    # kexts are required: graphics is per-arch; the FreeBSD kexts (IntelWiFi,
+    # IntelEthernet; nextbsd/nextbsd#554) and NVIDIA (nextbsd/nextbsd#548)
+    # exist only for amd64, each from its own repo.
     # A missing asset fails the build instead of shipping an image without
     # it (nextbsd/nextbsd#552).
     fetch -o "$ART/graphics-kexts-${ARCH}.tar.gz" \
         "https://github.com/nextbsd/nextbsd-kernel-extensions-graphics/releases/download/${C}/graphics-kexts-${ARCH}.tar.gz" \
         || { echo "ERROR: no graphics-kexts-${ARCH} artifact from nextbsd-kernel-extensions-graphics" >&2; exit 1; }
     if [ "$ARCH" = amd64 ]; then
-        for n in intelwifi-kext intelethernet-kext; do
-            fetch -o "$ART/${n}.tar.gz" \
-                "https://github.com/nextbsd/nextbsd-kernel-extensions-graphics/releases/download/${C}/${n}.tar.gz" \
-                || { echo "ERROR: no ${n} artifact from nextbsd-kernel-extensions-graphics" >&2; exit 1; }
-        done
+        fetch -o "$ART/freebsd-kexts-amd64.tar.gz" \
+            "https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/${C}/freebsd-kexts-amd64.tar.gz" \
+            || { echo "ERROR: no freebsd-kexts-amd64 artifact from nextbsd-kernel-extensions" >&2; exit 1; }
         fetch -o "$ART/nvidia-kexts-amd64.tar.gz" \
             "https://github.com/nextbsd/nextbsd-kernel-extensions-nvidia/releases/download/${C}/nvidia-kexts-amd64.tar.gz" \
             || { echo "ERROR: no nvidia-kexts-amd64 artifact from nextbsd-kernel-extensions-nvidia" >&2; exit 1; }
