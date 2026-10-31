@@ -1,10 +1,12 @@
-# Extra packages baked into the published NextBSD img + ISO from the FreeBSD
-# ports repo (pkg.FreeBSD.org). Both images are assembled from the same rootfs,
-# so everything listed here ships in BOTH the .img and the .iso.
+# Extra packages baked into the published NextBSD img + ISO from the NextBSD
+# repo (nextbsd-pkg), through the same isolated repo config as
+# NextBSD-everything. Both images are assembled from the same rootfs, so
+# everything listed here ships in BOTH the .img and the .iso.
 #
 # Empty: pkg itself comes from the NextBSD repo through NextBSD-everything
-# (nextbsd-pkg#19), never from pkg.FreeBSD.org (#545). The FreeBSD repo is
-# still shipped (/usr/local/etc/pkg/repos/FreeBSD.conf) for users' ports.
+# (nextbsd-pkg#19), never from pkg.FreeBSD.org (#545). NextBSD ships no
+# FreeBSD repo config (nextbsd-kernel#376), and nothing here is ever taken
+# from pkg.FreeBSD.org.
 #
 # pkg resolves each package's full dependency closure automatically, so unlike
 # the curated base srclist there is no manual runtime-lib audit — the whole
