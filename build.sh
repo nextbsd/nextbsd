@@ -310,9 +310,15 @@ if [ "$ASSEMBLY" = pkg ]; then
 #    pkg (nextbsd-contrib src/pkg, patch 0002) reads /private/etc/pkg.conf and
 #    the repos in /private/etc/pkg/, then /usr/local/etc/pkg/repos/, and
 #    nextbsd-overlays (seeded in step 3b) ships exactly two files there:
-#      - /private/etc/pkg.conf: IGNORE_OSVERSION only. No ABI pin: pkg reads
-#        FreeBSD:15:<arch> from /usr/bin/uname's ELF note (#357's NextBSD:15
-#        came from FreeBSD's bootstrap shim, not from pkg itself).
+#      - /private/etc/pkg.conf: IGNORE_OSVERSION. build.sh appends the
+#        per-arch ABI pin below (`ABI = "FreeBSD:15:<arch>"`,
+#        `OSVERSION = 1501000`). Without it pkg takes the ABI from
+#        /usr/bin/uname's ELF note, which carries NextBSD's own
+#        __FreeBSD_version (2700000 once the world is built at 27.0.0,
+#        nextbsd-kernel#376) and would ask for FreeBSD:27:<arch>. NextBSD's
+#        packages (built by nextbsd-pkg on a FreeBSD 15.1 VM) and
+#        pkg.FreeBSD.org/latest are FreeBSD:15:<arch>. NextBSD keeps the
+#        releng/15.1 kernel and libc API, so 15 and 1501000 are right.
 #      - /private/etc/pkg/NextBSD.conf: the nextbsd-pkg continuous-${MACHINE}
 #        flat repo, priority 100, unsigned (GitHub assets).
 #    build.sh adds one file of its own, /usr/local/etc/pkg/repos/FreeBSD.conf
@@ -327,6 +333,27 @@ if [ "$ASSEMBLY" = pkg ]; then
 for _pc in pkg.conf pkg/NextBSD.conf; do
     [ -s "$RF/private/etc/$_pc" ] || { echo "ERROR: nextbsd-overlays seed produced no /private/etc/$_pc" >&2; exit 1; }
 done
+# Per-arch ABI pin (see above). OSVERSION must be an unquoted integer: pkg
+# 2.8.4 rejects a string ("Malformed key OSVERSION ... expecting 'integer'"),
+# and ABI without OSVERSION makes it guess. No ALTABI: pkg no longer takes it.
+PKG_OSVERSION=1501000
+if grep -Eiq '^[[:space:]]*(ABI|ALTABI|OSVERSION|ABI_FILE)[[:space:]]*[=:]' "$RF/private/etc/pkg.conf"; then
+    echo "ERROR: nextbsd-overlays pkg.conf already sets ABI/OSVERSION; build.sh pins them per arch" >&2
+    exit 1
+fi
+cat >> "$RF/private/etc/pkg.conf" <<CONF
+
+# Added by the image build (nextbsd/nextbsd build.sh), per architecture.
+# NextBSD's own packages and pkg.FreeBSD.org/latest are built for FreeBSD 15
+# (NextBSD keeps the releng/15.1 kernel and libc API), while the ELF notes of
+# NextBSD's binaries carry NextBSD's own version. Pin pkg to the packages' ABI.
+ABI = "${PKG_ABI}";
+OSVERSION = ${PKG_OSVERSION};
+CONF
+grep -qx "ABI = \"${PKG_ABI}\";" "$RF/private/etc/pkg.conf" \
+    && grep -qx "OSVERSION = ${PKG_OSVERSION};" "$RF/private/etc/pkg.conf" \
+    || { echo "ERROR: /private/etc/pkg.conf lacks the ABI pin" >&2; exit 1; }
+echo "==> /private/etc/pkg.conf: ABI = \"${PKG_ABI}\"; OSVERSION = ${PKG_OSVERSION};"
 FBSD_REPOS="$RF/usr/local/etc/pkg/repos"
 mkdir -p "$FBSD_REPOS"
 cat > "$FBSD_REPOS/FreeBSD.conf" <<CONF
