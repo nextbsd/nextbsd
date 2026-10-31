@@ -315,47 +315,38 @@ if [ "$ASSEMBLY" = pkg ]; then
 #        came from FreeBSD's bootstrap shim, not from pkg itself).
 #      - /private/etc/pkg/NextBSD.conf: the nextbsd-pkg continuous-${MACHINE}
 #        flat repo, priority 100, unsigned (GitHub assets).
-#    build.sh adds one file of its own, /usr/local/etc/pkg/repos/FreeBSD.conf
-#    (pkg.FreeBSD.org/latest, the FreeBSD ports packages), so `pkg install` of
-#    a port works out of the box. It is a third-party repo: it has the default
-#    priority 0 (below NextBSD's 100), and NextBSD's pkg (patches 0001/0004)
-#    never takes pkg itself from it and confines its packages to /usr/local/
-#    and /var/. No /usr/local/etc/pkg.conf is written: pkg's config lives in
-#    /private/etc. The FreeBSD pkgbase base/kmods repos are never shipped;
-#    they stay on the build VM (its own /etc/pkg).
+#    NextBSD ships no FreeBSD repo config (nextbsd-kernel#376): there is no
+#    /usr/local/etc/pkg/repos/FreeBSD.conf, and /usr/local/etc/pkg/ is not
+#    created. The NextBSD repo is the only repo the image knows; anything that
+#    wants FreeBSD's packages (a user, by hand, or Gershwin's own setup)
+#    writes its own config under /usr/local/etc/pkg/repos/. No
+#    /usr/local/etc/pkg.conf is written: pkg's config lives in /private/etc.
+#    The FreeBSD pkgbase base/kmods repos are never shipped; they stay on the
+#    build VM (its own /etc/pkg).
 # ---------------------------------------------------------------------------
 for _pc in pkg.conf pkg/NextBSD.conf; do
     [ -s "$RF/private/etc/$_pc" ] || { echo "ERROR: nextbsd-overlays seed produced no /private/etc/$_pc" >&2; exit 1; }
 done
-FBSD_REPOS="$RF/usr/local/etc/pkg/repos"
-mkdir -p "$FBSD_REPOS"
-cat > "$FBSD_REPOS/FreeBSD.conf" <<CONF
-FreeBSD: {
-  url: "pkg+https://pkg.FreeBSD.org/FreeBSD:15:${ABIARCH}/latest",
-  mirror_type: "srv",
-  enabled: yes
-}
-CONF
 
 # ---------------------------------------------------------------------------
-# 5b. Bake pkglist.txt packages into the shipped rootfs from the FreeBSD ports
-#     repo, so BOTH the published .img and .iso (same rootfs) ship them out of
-#     the box. Empty since #545: pkg comes from the NextBSD repo through
-#     NextBSD-everything. It uses the FreeBSD.conf written just above via a
-#     REPOS_DIR override, so pkg ignores the build VM's own signed repos
-#     (which jam the SAT solver).
+# 5b. Bake pkglist.txt packages into the shipped rootfs, so BOTH the published
+#     .img and .iso (same rootfs) ship them out of the box. They come from the
+#     NextBSD repo only, through the same isolated REPOS_DIR ($NBREPO) as
+#     NextBSD-everything above, so pkg ignores the build VM's own signed repos
+#     (which jam the SAT solver) and never reaches pkg.FreeBSD.org. Empty
+#     since #545: pkg comes from the NextBSD repo through NextBSD-everything.
 #     pkg resolves each package's full dependency closure automatically — no
 #     manual runtime-lib audit (unlike the base srclist); the libscan step
 #     below then re-verifies the closure over the whole rootfs.
-#     ABI / OSVERSION / IGNORE_OSVERSION / ASSUME_ALWAYS_YES are still exported
-#     from the NextBSD-everything install above.
+#     ABI / OSVERSION / IGNORE_OSVERSION / ASSUME_ALWAYS_YES are still exported,
+#     and the NextBSD catalogue is still fresh, from the NextBSD-everything
+#     install above.
 # ---------------------------------------------------------------------------
 if [ -f "$ROOT/pkglist.txt" ]; then
     EXTRA_PKGS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$ROOT/pkglist.txt" | tr '\n' ' ')
     if [ -n "$EXTRA_PKGS" ]; then
-        echo "==> installing pkglist.txt packages from FreeBSD repo: $EXTRA_PKGS"
-        pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" update -f
-        pkg -r "$RF" -o REPOS_DIR="$FBSD_REPOS" install -y $EXTRA_PKGS
+        echo "==> installing pkglist.txt packages from the NextBSD repo: $EXTRA_PKGS"
+        $PKG install -y $EXTRA_PKGS
     fi
 fi
 
@@ -366,8 +357,8 @@ fi
 #       - the downloaded package tarballs, in PKG_CACHEDIR (/var/cache/pkg).
 #         Every install above (NextBSD-everything, then pkglist.txt) leaves its
 #         .pkg files there. `pkg clean -a` is scoped to exactly this.
-#       - the fetched repository catalogues, in PKG_DBDIR
-#         (/var/db/pkg/repos/<repo>/db), written by the `pkg update` calls.
+#       - the fetched repository catalogue, in PKG_DBDIR
+#         (/var/db/pkg/repos/<repo>/db), written by the `pkg update` above.
 #         `pkg clean` does NOT touch these and there is no pkg subcommand that
 #         does, so they have to go by hand.
 #
@@ -387,11 +378,11 @@ fi
 #     Runs before ALL THREE consumers: the rw disk image (step 6), the compact
 #     rootfs.uzip (step 7), and the mfsroot.
 #     KEEP: /private/etc/pkg.conf and /private/etc/pkg/ — the repo *config*
-#     from nextbsd-overlays and /usr/local/etc/pkg/repos/FreeBSD.conf (step 5),
-#     which the shipped system needs so `pkg install` works out of the box — and
+#     from nextbsd-overlays (step 5), which the shipped system needs so
+#     `pkg install` works out of the box — and
 #     private/var/db/pkg/local.sqlite, the installed-package registry.
-#     The catalogues under private/var/db/pkg/repos are named per repo
-#     (NextBSD, and FreeBSD only if 5b ran); all of them go.
+#     The catalogues under private/var/db/pkg/repos are named per repo (only
+#     NextBSD: it is the only repo the build fetches); all of them go.
 #     Host-driven via `pkg -r`, matching the rest of this script (no chroot).
 # ---------------------------------------------------------------------------
 echo "==> pkg clean: drop cached tarballs + fetched repository catalogues"
