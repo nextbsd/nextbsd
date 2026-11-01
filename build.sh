@@ -60,7 +60,6 @@ ARCH=${ARCH:-amd64}
 # Normalize an `aarch64` ARCH to `arm64` so a hand-run `ARCH=aarch64 sh build.sh`
 # still finds the mirror, the pkg repo tag and mkisoimages.sh.
 case "$ARCH" in arm64|aarch64) ARCH=arm64; ABIARCH=aarch64 ;; *) ABIARCH="$ARCH" ;; esac
-PKG_ABI="FreeBSD:15:${ABIARCH}"
 
 # BOARD selects a board-specific media lane. Empty (the default) is the
 # generic PC/UEFI lane that has always been here. The rootfs is identical
@@ -77,7 +76,7 @@ rpi500)
         echo "ERROR: BOARD=rpi500 is arm64; got ARCH=$ARCH." >&2
         exit 1
     fi
-    ARCH=arm64; ABIARCH=aarch64; PKG_ABI="FreeBSD:15:aarch64"
+    ARCH=arm64; ABIARCH=aarch64
     ;;
 *)
     echo "ERROR: unknown BOARD=$BOARD (known: rpi500)." >&2
@@ -94,6 +93,14 @@ MIRROR="https://download.freebsd.org/ftp/releases/${ARCH}/${FREEBSD_VERSION}-REL
 # nextbsd-pkg flat repo: per-arch rolling release tag (continuous-<arch>).
 # Used by ASSEMBLY=pkg — every image this repo publishes.
 PKG_REPO_URL="https://github.com/nextbsd/nextbsd-pkg/releases/download/continuous-${ARCH}"
+
+# NextBSD's package ABI (nextbsd-kernel#376), the same values nextbsd-pkg
+# stamps on every package and on the catalogue: NextBSD:27:<arch> (aarch64 on
+# arm64), OSVERSION 2700000. A NextBSD 27 system's own pkg computes exactly
+# this ABI, so the package database baked into the image matches the
+# installed system.
+NBOSVERSION=2700000
+NB_ABI="NextBSD:$((NBOSVERSION / 100000)):${ABIARCH}"
 
 # How the rootfs gets the OS (see header): `pkg` = every published image
 # (pkg install NextBSD-everything); `artifacts` = manual 1:1 artifact
@@ -113,7 +120,7 @@ mkdir -p "$WORK" "$OUT" "$DIST"
 chflags -R noschg "$WORK" 2>/dev/null || true
 rm -rf "$WORK"/* "$OUT"/*
 
-echo "==> build: NextBSD $ARCH${BOARD:+ board=$BOARD} (pkg ABI $PKG_ABI), stamp $IMG_DATE"
+echo "==> build: NextBSD $ARCH${BOARD:+ board=$BOARD} (pkg ABI $NB_ABI), stamp $IMG_DATE"
 
 # ---------------------------------------------------------------------------
 # 1. src.txz — ONLY for FreeBSD's release script (mkisoimages.sh) in the ISO
@@ -213,15 +220,44 @@ NextBSD: {
 }
 CONF
 
+    # NextBSD's pkg-static, not the build VM's own pkg: the packages carry
+    # the NextBSD ABI, which only NextBSD's pkg knows (nextbsd-contrib
+    # src/pkg, patch 0005); FreeBSD's pkg stops at "Unknown OS 'NextBSD'".
+    # The same tool nextbsd-pkg builds the repository with: the
+    # nextbsd-contrib `continuous` pkg artifact for the BUILD HOST's arch
+    # (amd64 in CI, whatever arch is being imaged -- it is a static binary
+    # and only untars packages here, never runs them). The workflow
+    # downloads it into art/tool/ before the VM starts; a hand run fetches
+    # it. pkg-static is built against the releng/15.1 base, so the build VM
+    # must be FreeBSD 15.1 or newer. NextBSD's pkg reads /private/etc/pkg.conf
+    # and /private/etc/pkg/, which the VM doesn't have, so it gets an
+    # explicit empty config (-C) and the isolated repo directory (-R).
+    NBPKG_HOST=$(uname -m)
+    NBPKG_TGZ="$ROOT/art/tool/nextbsd-contrib-pkg-${NBPKG_HOST}.tar.gz"
+    if [ ! -s "$NBPKG_TGZ" ]; then
+        mkdir -p "$ROOT/art/tool"
+        fetch -o "$NBPKG_TGZ" \
+            "https://github.com/nextbsd/nextbsd-contrib/releases/download/continuous/nextbsd-contrib-pkg-${NBPKG_HOST}.tar.gz"
+    fi
+    NBTOOL="$WORK/nbpkg"; mkdir -p "$NBTOOL/root"
+    tar -C "$NBTOOL/root" -xzf "$NBPKG_TGZ" ./usr/sbin/pkg-static
+    : > "$NBTOOL/pkg.conf"
+
     # Install into $RF. `-r` sets the install root (host-driven, not chroot).
-    #   ABI=FreeBSD:15:<arch>  — for arm64 we cross-install aarch64 packages in
-    #                            the x86 VM; amd64 matches the VM natively.
-    #   OSVERSION=$(uname -K)  — pkg requires OSVERSION when ABI is set; the
-    #                            VM kernel (15.1) is the right value for both.
-    #   IGNORE_OSVERSION       — the rolling snapshot's stamp shouldn't gate.
-    export ASSUME_ALWAYS_YES=yes IGNORE_OSVERSION=yes
-    export ABI="$PKG_ABI" OSVERSION="$(uname -K)"
-    PKG="pkg -r $RF -o REPOS_DIR=$NBREPO"
+    # The target ABI goes in the ENVIRONMENT, not `-o ABI=`: with -r, pkg
+    # would otherwise derive it from the (still empty) root.
+    #   ABI=NextBSD:27:<arch>  -- for arm64 we cross-install aarch64 packages
+    #                            in the x86 VM; nothing from them is executed.
+    #   OSVERSION=2700000      -- pkg requires OSVERSION when ABI is set; it is
+    #                            the stamp every NextBSD package carries.
+    export ASSUME_ALWAYS_YES=yes
+    export ABI="$NB_ABI" OSVERSION="$NBOSVERSION"
+    PKG="$NBTOOL/root/usr/sbin/pkg-static -C $NBTOOL/pkg.conf -R $NBREPO -r $RF"
+    $PKG --version
+    # A pkg-static from before nextbsd-contrib's patch 0005 stops here with
+    # "Unknown OS 'NextBSD' in ABI string".
+    _tabi=$($PKG config ABI) || _tabi=
+    [ "$_tabi" = "$ABI" ] || { echo "ERROR: nextbsd-contrib's pkg-static does not know the ABI ${ABI} (got '${_tabi}'); it needs nextbsd-contrib's patch 0005 (nextbsd-kernel#376)" >&2; exit 1; }
 
     # Apple /private layout BEFORE anything is installed: etc, var and tmp
     # are relative symlinks into private/ from the start, as on Darwin. pkg's
@@ -310,9 +346,10 @@ if [ "$ASSEMBLY" = pkg ]; then
 #    pkg (nextbsd-contrib src/pkg, patch 0002) reads /private/etc/pkg.conf and
 #    the repos in /private/etc/pkg/, then /usr/local/etc/pkg/repos/, and
 #    nextbsd-overlays (seeded in step 3b) ships exactly two files there:
-#      - /private/etc/pkg.conf: IGNORE_OSVERSION only. No ABI pin: pkg reads
-#        FreeBSD:15:<arch> from /usr/bin/uname's ELF note (#357's NextBSD:15
-#        came from FreeBSD's bootstrap shim, not from pkg itself).
+#      - /private/etc/pkg.conf: IGNORE_OSVERSION only. No ABI pin: on the
+#        installed system NextBSD's pkg computes NextBSD:27:<arch> itself
+#        (nextbsd-contrib src/pkg, patch 0005), the ABI the packages and the
+#        image's package database (installed above with ${NB_ABI}) carry.
 #      - /private/etc/pkg/NextBSD.conf: the nextbsd-pkg continuous-${MACHINE}
 #        flat repo, priority 100, unsigned (GitHub assets).
 #    NextBSD ships no FreeBSD repo config (nextbsd-kernel#376): there is no
@@ -338,9 +375,9 @@ done
 #     pkg resolves each package's full dependency closure automatically — no
 #     manual runtime-lib audit (unlike the base srclist); the libscan step
 #     below then re-verifies the closure over the whole rootfs.
-#     ABI / OSVERSION / IGNORE_OSVERSION / ASSUME_ALWAYS_YES are still exported,
-#     and the NextBSD catalogue is still fresh, from the NextBSD-everything
-#     install above.
+#     It uses the same NextBSD pkg-static ($PKG) with the NextBSD ABI; ABI /
+#     OSVERSION / ASSUME_ALWAYS_YES are still exported, and the NextBSD
+#     catalogue is still fresh, from the NextBSD-everything install above.
 # ---------------------------------------------------------------------------
 if [ -f "$ROOT/pkglist.txt" ]; then
     EXTRA_PKGS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$ROOT/pkglist.txt" | tr '\n' ' ')
@@ -383,10 +420,11 @@ fi
 #     private/var/db/pkg/local.sqlite, the installed-package registry.
 #     The catalogues under private/var/db/pkg/repos are named per repo (only
 #     NextBSD: it is the only repo the build fetches); all of them go.
-#     Host-driven via `pkg -r`, matching the rest of this script (no chroot).
+#     Host-driven via `pkg -r`, matching the rest of this script (no chroot),
+#     and with the same NextBSD pkg-static that wrote the database.
 # ---------------------------------------------------------------------------
 echo "==> pkg clean: drop cached tarballs + fetched repository catalogues"
-pkg -r "$RF" clean -a -y || true
+$PKG clean -a -y || true
 # pkg clean leaves anything it does not recognise as its own (and its failure
 # is ignored above), so empty the cache directory itself: no downloaded
 # package ships in the image. The directory stays, as pkg expects it.

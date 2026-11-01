@@ -129,6 +129,19 @@ jobs:
         id: meta
         run: echo "date=$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
 
+      # NextBSD's pkg-static (nextbsd-contrib's `continuous` pkg artifact, a
+      # public repo), the same amd64 build nextbsd-pkg uses: the packages
+      # carry the NextBSD ABI (NextBSD:27:<arch>, nextbsd-kernel#376), which
+      # only NextBSD's pkg knows. The VM is amd64 for every lane; build.sh
+      # installs the image's packages with it.
+      - name: Download NextBSD's pkg (nextbsd-contrib)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p art/tool
+          gh release download continuous -R nextbsd/nextbsd-contrib \
+            --pattern "nextbsd-contrib-pkg-amd64.tar.gz" --dir art/tool --clobber
+
       - name: build ISO inside FreeBSD VM
         uses: vmactions/freebsd-vm@v1
         with:
@@ -259,6 +272,19 @@ jobs:
             exit 1
           fi
           echo "Image header ok"
+
+      # NextBSD's pkg-static (nextbsd-contrib's `continuous` pkg artifact, a
+      # public repo), the same amd64 build nextbsd-pkg uses: the packages
+      # carry the NextBSD ABI (NextBSD:27:<arch>, nextbsd-kernel#376), which
+      # only NextBSD's pkg knows. The VM is amd64 for every lane; build.sh
+      # installs the image's packages with it.
+      - name: Download NextBSD's pkg (nextbsd-contrib)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p art/tool
+          gh release download continuous -R nextbsd/nextbsd-contrib \
+            --pattern "nextbsd-contrib-pkg-amd64.tar.gz" --dir art/tool --clobber
 
       - name: build the rpi5 image inside FreeBSD VM
         uses: vmactions/freebsd-vm@v1
