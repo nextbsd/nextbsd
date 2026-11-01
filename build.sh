@@ -33,11 +33,17 @@
 # mkimg are arch-agnostic.
 #
 # Produces:
-#   out/NextBSD-<arch>-<date>.img.zip   GPT disk image (BIOS+UEFI, rw UFS root)
-#   out/NextBSD-<arch>-<date>.iso.zip   live ISO (mfsroot -> uzip -> vfs.pivot)
+#   out/NextBSD-<arch>-<stamp>.img.zip   GPT disk image (BIOS+UEFI, rw UFS root)
+#   out/NextBSD-<arch>-<stamp>.iso.zip   live ISO (mfsroot -> uzip -> vfs.pivot)
 #
 # BOARD=rpi500 instead produces one artifact and no ISO:
-#   out/NextBSD-rpi500-<arch>-<date>.img.zip   MBR: FAT32 boot + rw UFS root
+#   out/NextBSD-<arch>-rpi5-<stamp>.img.zip   MBR: FAT32 boot + rw UFS root
+#
+# <stamp> is <version>-<build>, e.g. 27.0.0-42: the ProductVersion and
+# ProductBuildVersion of the NextBSD-everything the image installed, from its
+# /System/Library/CoreServices/SystemVersion.plist (nextbsd/nextbsd#536). Packages
+# from before nextbsd-pkg shipped that plist have none, and then <stamp> is
+# IMG_DATE, as it always was.
 # The board token comes FIRST and that is load-bearing -- build.yml's release
 # step does IMG=$(ls out/NextBSD-${ARCH}-*.img.zip) into a scalar, so an
 # arch-first name would match two files and break the existing arm64 lane.
@@ -48,8 +54,10 @@ set -eu
 : "${LABEL:=NEXTBSD}"
 ARCH_EXPLICIT=${ARCH:+yes}
 ARCH=${ARCH:-amd64}
-# UTC build timestamp — the SINGLE source of truth for the version: CI passes
-# IMG_DATE so the artifact name, image, nextbsd-version and os-release all match.
+# UTC build timestamp. The version itself comes from the installed
+# NextBSD-everything's SystemVersion.plist (step 6, nextbsd/nextbsd#536);
+# IMG_DATE names the image, os-release and nextbsd-version only when the
+# packages predate that plist. CI passes it so the names agree either way.
 : "${IMG_DATE:=$(date -u +%Y%m%d-%H%M%S)}"
 
 # Two names for 64-bit ARM, and they are NOT interchangeable:
@@ -435,9 +443,58 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Version identity (single source of truth = $IMG_DATE).
+# 6. Version identity (nextbsd/nextbsd#536). The single source is Darwin's
+#    /System/Library/CoreServices/SystemVersion.plist, which NextBSD-everything
+#    owns: ProductName NextBSD, ProductVersion 27.0.0 (the kernel's
+#    kern.osrelease) and ProductBuildVersion <build> (nextbsd-pkg's run
+#    number), the same two values as the package version 27.0.0.<build>.
+#    Every reader takes them from the installed plist, so a fresh image and a
+#    `pkg upgrade`d system show the same thing:
+#      - sw_vers(1) (nextbsd-userland) reads the plist itself;
+#      - /bin/nextbsd-version, written below, reads it each time it runs;
+#      - /etc/os-release, which the login banner (nextbsd-fetch, PRETTY_NAME)
+#        reads, is generated from it: here for the image, and on the installed
+#        system by NextBSD-everything's Lua post-install script, which pkg runs
+#        on every install and upgrade of the package. Both write these lines.
+#    Packages from before nextbsd-pkg shipped the plist have none; then all
+#    three fall back to IMG_DATE, as before.
 # ---------------------------------------------------------------------------
-cat > "$RF/etc/os-release" <<OSREL
+SYSVER_PLIST=/System/Library/CoreServices/SystemVersion.plist
+# plist_string <key> <file>: a <string> value of an XML plist, the way
+# nextbsd-pkg writes this one (each <key> followed by its <string>).
+plist_string() {
+    awk -v k="<key>$1</key>" 'index($0, k) {
+        if ($0 !~ /<string>/) getline
+        if (match($0, /<string>[^<]*<\/string>/)) print substr($0, RSTART + 8, RLENGTH - 17)
+        exit
+    }' "$2"
+}
+NB_NAME= NB_VERSION= NB_BUILD=
+if [ -f "$RF$SYSVER_PLIST" ]; then
+    NB_NAME=$(plist_string ProductName "$RF$SYSVER_PLIST")
+    NB_VERSION=$(plist_string ProductVersion "$RF$SYSVER_PLIST")
+    NB_BUILD=$(plist_string ProductBuildVersion "$RF$SYSVER_PLIST")
+fi
+if [ -n "$NB_NAME" ] && [ -n "$NB_VERSION" ] && [ -n "$NB_BUILD" ]; then
+    echo "==> version: $NB_NAME $NB_VERSION ($NB_BUILD), from $SYSVER_PLIST"
+    # The same lines NextBSD-everything's post-install script writes.
+    cat > "$RF/etc/os-release" <<OSREL
+NAME="${NB_NAME}"
+VERSION="${NB_VERSION} (${NB_BUILD})"
+VERSION_ID="${NB_VERSION}"
+BUILD_ID="${NB_BUILD}"
+PRETTY_NAME="${NB_NAME} ${NB_VERSION} (${NB_BUILD})"
+ID=nextbsd
+ID_LIKE=freebsd
+HOME_URL="https://nextbsd.org"
+OSREL
+    # Image and ISO names: NextBSD-<arch>-27.0.0-<build>. It starts with a
+    # digit, like the datestamp did, so the workflow's [0-9]* globs still
+    # tell it from the rpi5 board image.
+    IMG_STAMP="${NB_VERSION}-${NB_BUILD}"
+else
+    echo "==> version: no $SYSVER_PLIST in NextBSD-everything (packages from before nextbsd/nextbsd#536); using $IMG_DATE"
+    cat > "$RF/etc/os-release" <<OSREL
 NAME="NextBSD"
 PRETTY_NAME="NextBSD ${IMG_DATE}"
 ID=nextbsd
@@ -446,11 +503,32 @@ VERSION="${IMG_DATE}"
 VERSION_ID="15.1"
 HOME_URL="https://nextbsd.org"
 OSREL
-# /bin/nextbsd-version (if the userland package didn't ship one, write a stub).
+    IMG_STAMP="$IMG_DATE"
+fi
+# /bin/nextbsd-version (if the userland package didn't ship one): prints
+# `NextBSD 27.0.0 (<build>)` from the installed plist each time it runs, so it
+# follows `pkg upgrade`; the image's IMG_DATE only when there is no plist.
 if [ ! -x "$RF/bin/nextbsd-version" ]; then
     cat > "$RF/bin/nextbsd-version" <<NBV
 #!/bin/sh
-echo "NextBSD ${IMG_DATE}"
+# nextbsd-version: the installed NextBSD version and build, from
+# ${SYSVER_PLIST}, which NextBSD-everything installs and
+# pkg upgrade replaces (nextbsd/nextbsd#536). sw_vers(1) reads the same file.
+p=${SYSVER_PLIST}
+s() {
+	awk -v k="<key>\$1</key>" 'index(\$0, k) {
+		if (\$0 !~ /<string>/) getline
+		if (match(\$0, /<string>[^<]*<\\/string>/)) print substr(\$0, RSTART + 8, RLENGTH - 17)
+		exit
+	}' "\$p" 2>/dev/null
+}
+n=\$(s ProductName) v=\$(s ProductVersion) b=\$(s ProductBuildVersion)
+if [ -n "\$n" ] && [ -n "\$v" ] && [ -n "\$b" ]; then
+	echo "\$n \$v (\$b)"
+else
+	# No plist: packages from before it existed. The image's build stamp.
+	echo "NextBSD ${IMG_DATE}"
+fi
 NBV
     chmod 0555 "$RF/bin/nextbsd-version"
 fi
@@ -865,10 +943,11 @@ CFG
     # NVMe (dos label, p1 type 0x0c FAT32-LBA, p2 the OS). fat32lba is that
     # 0x0c; a plain fat32 (0x0b) is CHS-addressed and the wrong type here.
     echo "==> mkimg: MBR disk image (FAT32 boot + freebsd root)"
-    # Arch first, board second: NextBSD-arm64-rpi5-<date>.img. Sorts with the
+    # Arch first, board second: NextBSD-arm64-rpi5-<stamp>.img. Sorts with the
     # other arm64 images, and the globs that consume these are anchored on the
-    # datestamp ([0-9]*) so a board token can never be mistaken for one.
-    IMG_NAME="NextBSD-${ARCH}-rpi5-${IMG_DATE}.img"
+    # stamp's leading digit ([0-9]*) so a board token can never be mistaken
+    # for one.
+    IMG_NAME="NextBSD-${ARCH}-rpi5-${IMG_STAMP}.img"
     mkimg -s mbr -f raw \
         -p fat32lba:="$WORK/rpiboot.img" \
         -p freebsd:="$WORK/rootfs.ufs" \
@@ -915,10 +994,11 @@ makefs -t msdos \
 #     partition) AND UEFI (the efi/ESP partition). freebsd-ufs is the
 #     read-write root.
 echo "==> mkimg: GPT disk image"
-# NextBSD-branded, datestamped image name — identical to the published
-# continuous asset, so the build output is uploaded + published as-is
-# (no rename). img-boot-test.sh discovers the member by its .img extension.
-IMG_NAME="NextBSD-${ARCH}-${IMG_DATE}.img"
+# NextBSD-branded image name, NextBSD-<arch>-<stamp>.img (step 6: 27.0.0-<build>,
+# or the datestamp) — identical to the published continuous asset, so the build
+# output is uploaded + published as-is (no rename). img-boot-test.sh discovers
+# the member by its .img extension.
+IMG_NAME="NextBSD-${ARCH}-${IMG_STAMP}.img"
 # BIOS boot blocks (pmbr/gptboot) only exist on amd64; arm64 is UEFI-only, so
 # fall back to an ESP-only GPT there (same arch split the installer uses).
 if [ -f "$WORK/rootfs/boot/pmbr" ] && [ -f "$WORK/rootfs/boot/gptboot" ]; then
@@ -1188,7 +1268,7 @@ cp "$WORK/rootfs.uzip" "$ISOROOT/rootfs.uzip"
 
 # 7e. Build the bootable cd9660 (BIOS cdboot + UEFI ESP) via the release script
 #     (extracted from src.txz at step 3a; lands under usr/src/ — locate by glob).
-ISO_NAME="NextBSD-${ARCH}-${IMG_DATE}.iso"
+ISO_NAME="NextBSD-${ARCH}-${IMG_STAMP}.iso"
 # amd64 gets BIOS (El Torito cdboot) + UEFI; arm64 is UEFI-only, same split as
 # the GPT disk image above.
 echo "==> mkisoimages.sh: bootable cd9660 ($([ -f "$ISOROOT/boot/cdboot" ] && echo 'BIOS + UEFI' || echo 'UEFI-only'))"

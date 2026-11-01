@@ -122,9 +122,12 @@ jobs:
           docker-images: false
           swap-storage: false
 
-      # Compute the datestamp once on the host and pass it into the VM, so
-      # the built file (NextBSD-<arch>-<date>.img.zip), the workflow
-      # artifact name, and the published continuous asset all agree.
+      # Compute the datestamp once on the host and pass it into the VM. The
+      # image is named after the version and build of the NextBSD-everything
+      # it installs (NextBSD-<arch>-27.0.0-<build>.img.zip, from its
+      # SystemVersion.plist; nextbsd/nextbsd#536), which only build.sh knows,
+      # so the steps after the build read the stamp off the file it wrote.
+      # The datestamp is the stamp only for packages from before that plist.
       - name: compute build date
         id: meta
         run: echo "date=$(date -u +%Y%m%d-%H%M%S)" >> "$GITHUB_OUTPUT"
@@ -180,27 +183,31 @@ jobs:
             sh build.sh
 
       - name: checksum + summary
+        id: files
         run: |
           ls -lh out/
-          IMG="NextBSD-${{ matrix.arch }}-${{ steps.meta.outputs.date }}.img.zip"
-          ISO="NextBSD-${{ matrix.arch }}-${{ steps.meta.outputs.date }}.iso.zip"
+          # The one image build.sh wrote: NextBSD-<arch>-<stamp>.img.zip.
+          IMG=$(cd out && ls NextBSD-${{ matrix.arch }}-[0-9]*.img.zip)
+          STAMP=${IMG#NextBSD-${{ matrix.arch }}-}; STAMP=${STAMP%.img.zip}
+          ISO="NextBSD-${{ matrix.arch }}-${STAMP}.iso.zip"
           ( cd out && sha256sum "$IMG" > "$IMG.sha256" )
           ( cd out && sha256sum "$ISO" > "$ISO.sha256" )
           cat "out/$IMG.sha256" "out/$ISO.sha256"
+          echo "stamp=$STAMP" >> "$GITHUB_OUTPUT"
 
       # compression-level: 0 — the .img.zip is already DEFLATE-9; the outer
       # artifact wrapper just stores it (no recompression). GitHub always
       # wraps an uploaded artifact in its own <name>.zip on download, so the
-      # content stays a single dated NextBSD-<arch>-<date>.img.zip inside —
+      # content stays a single NextBSD-<arch>-<stamp>.img.zip inside —
       # the exact file the release job publishes to `continuous`, no rename.
       - uses: actions/upload-artifact@v4
         with:
-          name: NextBSD-${{ matrix.arch }}-${{ steps.meta.outputs.date }}
+          name: NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}
           path: |
-            out/NextBSD-${{ matrix.arch }}-${{ steps.meta.outputs.date }}.img.zip
-            out/NextBSD-${{ matrix.arch }}-${{ steps.meta.outputs.date }}.img.zip.sha256
-            out/NextBSD-${{ matrix.arch }}-${{ steps.meta.outputs.date }}.iso.zip
-            out/NextBSD-${{ matrix.arch }}-${{ steps.meta.outputs.date }}.iso.zip.sha256
+            out/NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.img.zip
+            out/NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.img.zip.sha256
+            out/NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.iso.zip
+            out/NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.iso.zip.sha256
           compression-level: 0
           retention-days: 14
           if-no-files-found: error
@@ -311,9 +318,14 @@ jobs:
             sh build.sh
 
       - name: checksum + summary
+        id: files
         run: |
           ls -lh out/
-          IMG="NextBSD-arm64-rpi5-${{ steps.meta.outputs.date }}.img.zip"
+          # NextBSD-arm64-rpi5-<stamp>.img.zip, named by build.sh (see the
+          # build job's checksum step).
+          IMG=$(cd out && ls NextBSD-arm64-rpi5-[0-9]*.img.zip)
+          STAMP=${IMG#NextBSD-arm64-rpi5-}; STAMP=${STAMP%.img.zip}
+          echo "stamp=$STAMP" >> "$GITHUB_OUTPUT"
           ( cd out && sha256sum "$IMG" > "$IMG.sha256" )
           cat "out/$IMG.sha256"
           {
@@ -327,10 +339,10 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NextBSD-arm64-rpi5-${{ steps.meta.outputs.date }}
+          name: NextBSD-arm64-rpi5-${{ steps.files.outputs.stamp }}
           path: |
-            out/NextBSD-arm64-rpi5-${{ steps.meta.outputs.date }}.img.zip
-            out/NextBSD-arm64-rpi5-${{ steps.meta.outputs.date }}.img.zip.sha256
+            out/NextBSD-arm64-rpi5-${{ steps.files.outputs.stamp }}.img.zip
+            out/NextBSD-arm64-rpi5-${{ steps.files.outputs.stamp }}.img.zip.sha256
           compression-level: 0
           retention-days: 14
           if-no-files-found: error
@@ -382,8 +394,9 @@ jobs:
       - uses: actions/checkout@v4
 
       # Image source depends on whether the build ran:
-      #  - build ran: download whatever the build job produced (the dated
-      #    diskimg artifact), located by glob (avoids threading the datestamp).
+      #  - build ran: download whatever the build job produced (the
+      #    NextBSD-<arch>-<stamp> artifact), located by glob (avoids threading
+      #    the stamp).
       #  - build skipped (tests-only change): pull the latest published
       #    continuous ISO so the harness change is validated against the
       #    current known-good image.
@@ -393,7 +406,7 @@ jobs:
         with:
           # Only THIS arch's artifact — the matrix builds both, and a bare glob
           # would otherwise match both arches' images.
-          # [0-9]* anchors on the datestamp: NextBSD-arm64-rpi5-... must not
+          # [0-9]* anchors on the stamp's leading digit: NextBSD-arm64-rpi5-... must not
           # be swallowed by the glob for the generic NextBSD-arm64-... image.
           pattern: NextBSD-${{ matrix.arch }}-[0-9]*
           path: out/
@@ -428,7 +441,7 @@ jobs:
         run: |
           chmod +x tests/img-boot-test.sh
           # A bare glob would match the board image too and put two paths
-          # into a scalar. Anchor on the datestamp.
+          # into a scalar. Anchor on the stamp's leading digit.
           IMG=$(ls out/NextBSD-${{ matrix.arch }}-[0-9]*.img.zip)
           ./tests/img-boot-test.sh "$IMG"
 
@@ -468,7 +481,7 @@ jobs:
       - name: download built ISO (artifact)
         uses: actions/download-artifact@v4
         with:
-          # [0-9]* anchors on the datestamp: NextBSD-arm64-rpi5-... must not
+          # [0-9]* anchors on the stamp's leading digit: NextBSD-arm64-rpi5-... must not
           # be swallowed by the glob for the generic NextBSD-arm64-... image.
           pattern: NextBSD-${{ matrix.arch }}-[0-9]*
           path: out/
@@ -535,8 +548,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pull EVERY arch's dated artifact (no `pattern`) — each
-      # NextBSD-<arch>-<date>.img.zip is already the final published name, so
+      # Pull EVERY arch's artifact (no `pattern`) — each
+      # NextBSD-<arch>-<stamp>.img.zip is already the final published name, so
       # there is nothing to rename or recompute here; publish them straight to
       # `continuous`.
       - uses: actions/download-artifact@v4
@@ -553,6 +566,21 @@ jobs:
 
       - name: list release assets
         run: ls -lh out/NextBSD-*.img.zip out/NextBSD-*.img.zip.sha256 out/NextBSD-*.iso.zip out/NextBSD-*.iso.zip.sha256
+
+      # The release notes name the NextBSD version and build the images
+      # installed, read off the amd64 ISO's name (NextBSD-amd64-27.0.0-<build>,
+      # nextbsd/nextbsd#536). Images from packages without SystemVersion.plist
+      # carry a datestamp instead, and the notes say so.
+      - name: image version
+        id: version
+        run: |
+          ISO=$(cd out && ls NextBSD-amd64-[0-9]*.iso.zip)
+          STAMP=${ISO#NextBSD-amd64-}; STAMP=${STAMP%.iso.zip}
+          case "$STAMP" in
+            *.*.*-*) V="NextBSD ${STAMP%-*} (${STAMP##*-}), the version and build of the NextBSD-everything these images install." ;;
+            *)       V="Images stamped ${STAMP}: their packages predate SystemVersion.plist, so they carry no version." ;;
+          esac
+          echo "line=$V" >> "$GITHUB_OUTPUT"
 
       # `gh release create` wedges silently on big ISO uploads (single PUT,
       # no chunking, no retry). softprops/action-gh-release uses Octokit's
@@ -574,6 +602,8 @@ jobs:
           body: |
             Rolling continuous build. Refreshed automatically every push to
             `main` after the build + boot smoke-test both pass.
+
+            ${{ steps.version.outputs.line }}
 
             `NextBSD-arm64-rpi5-*` (Raspberry Pi 5 family: 5 B, 500/500+, CM5)
             is built from the same rootfs but is **not** boot tested by CI --
