@@ -132,8 +132,8 @@ syslog -k Sender ipconfigd           # filter by sender
 
 # version identity — NextBSD's own
 uname -a                             # ostype reads NextBSD
-nextbsd-version                      # userland build version (a timestamp)
-nextbsd-version -k                   # the installed kernel's version
+nextbsd-version                      # NextBSD 27.0.0 (<build>)
+sw_vers                              # ProductName / ProductVersion / BuildVersion
 
 # Standard tools are all still here
 top
@@ -171,20 +171,32 @@ via `libSystemConfiguration.so`.
 
 ## Versioning
 
-NextBSD stamps every build with a single UTC timestamp
-(`YYYYMMDD-HHMMSS`), computed once and shared by the image/ISO names,
-`/etc/os-release`, and `nextbsd-version` — so they always agree.
+A NextBSD system is versioned `27.0.0 (<build>)`
+([#536](https://github.com/nextbsd/nextbsd/issues/536)). `27.0.0` is the
+kernel's release (`uname -r`) and `<build>` is the nextbsd-pkg run that built
+the packages; every NextBSD package is versioned `27.0.0.<build>`.
+
+The installed `NextBSD-everything` package owns Darwin's
+`/System/Library/CoreServices/SystemVersion.plist` (`ProductName`,
+`ProductVersion`, `ProductBuildVersion`), and everything that shows the version
+reads it from the installed system, so a fresh image and a `pkg upgrade`d one
+agree:
 
 ```sh
-nextbsd-version          # userland build version, e.g. 20260613-224731
-nextbsd-version -k       # installed kernel version (its own build time)
-nextbsd-version -r       # running kernel version (= uname -r)
-cat /etc/os-release      # NAME=NextBSD, VERSION_ID=<same timestamp>, ...
+sw_vers                  # ProductName: NextBSD, ProductVersion: 27.0.0, BuildVersion: <build>
+sw_vers -productVersion  # 27.0.0
+nextbsd-version          # NextBSD 27.0.0 (<build>)
+pkg info NextBSD-everything   # NextBSD-everything-27.0.0.<build>
+cat /etc/os-release      # PRETTY_NAME="NextBSD 27.0.0 (<build>)", VERSION_ID, BUILD_ID, ...
 ```
 
-Userland and kernel build in separate repos at different times, so
-`nextbsd-version` (userland) and `-k`/`-r` (kernel) legitimately differ;
-that gap is exactly what the command exists to show.
+`/etc/os-release`, which the login banner reads, is generated from the plist:
+by `build.sh` for a fresh image, and on an installed system by
+`NextBSD-everything`'s post-install script, which pkg runs on every upgrade of
+the package. The image and ISO names carry the same pair:
+`NextBSD-<arch>-27.0.0-<build>.img.zip`. Images built from packages that predate
+the plist fall back to the build's UTC timestamp (`YYYYMMDD-HHMMSS`) for all of
+these.
 
 ## How it's built
 
@@ -219,7 +231,7 @@ orchestration step, not a standalone local-build command.
 
 ## Releases
 
-Each successful `main` build publishes dated assets to the
+Each successful `main` build publishes versioned assets to the
 [continuous release][release] — the zip-wrapped GPT disk image
 (`NextBSD-<arch>-<stamp>.img.zip`) and ISO (`NextBSD-<arch>-<stamp>.iso.zip`),
 each with a matching `.sha256`. The latest is always at that tag.
