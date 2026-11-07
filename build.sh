@@ -1218,10 +1218,18 @@ vlog "pivot complete; exec launchd"
 # the union's normal ld-elf resolution (/lib + /usr/lib via hints), as on a
 # regular boot. PATH stays exported (the full default set above).
 unset LD_LIBRARY_PATH
-exec /sbin/launchd
+# Hand launchd /dev/null for stdin/stdout/stderr, not the console (#599). Our
+# own [init] lines above needed the console, but launchd only opens /dev/null
+# for fds that are CLOSED (testfd_or_openfd), so an inherited console would
+# put every PID 1 stderr line, and every job without StandardOutPath /
+# StandardErrorPath, on the screen. A disk boot starts launchd with no fds
+# open, so this makes the live ISO match it. Verbose boots are unaffected:
+# launchd opens /dev/console itself for its LOG_CONSOLE output under -v.
+exec /sbin/launchd </dev/null >/dev/null 2>&1
 # If we get here, exec failed — keep PID 1 alive so the panic message is the
-# exec error above, not "Going nowhere without my init!".
-echo "[init] FATAL: exec /sbin/launchd failed ($?)"
+# exec error above, not "Going nowhere without my init!". stdio now points at
+# /dev/null, so write this one straight to the console.
+echo "[init] FATAL: exec /sbin/launchd failed ($?)" >/dev/console 2>&1
 while : ; do sleep 60; done
 INITEOF
 chmod 0755 "$MFS/init"
