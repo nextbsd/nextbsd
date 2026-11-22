@@ -368,6 +368,11 @@ jobs:
     # the flaky qemu-serial loader handshake. We still boot-test on pull_request
     # (the gate) and on a hand-triggered run (workflow_dispatch).
     if: "!cancelled() && needs.changes.result == 'success' && (needs.build.result == 'success' || needs.build.result == 'skipped') && github.event_name != 'push'"
+    # actions: read lets the skipped-build path download an earlier run's
+    # artifact.
+    permissions:
+      contents: read
+      actions: read
     # Each leg boots on a runner of its OWN arch: amd64 on the x86 runner, arm64
     # on GitHub's ubuntu-24.04-arm (free for public repos), the same shape
     # nextbsd-userland's ci-image-boot has used since #355. That keeps the guest
@@ -397,9 +402,10 @@ jobs:
       #  - build ran: download whatever the build job produced (the
       #    NextBSD-<arch>-<stamp> artifact), located by glob (avoids threading
       #    the stamp).
-      #  - build skipped (tests-only change): pull the latest published
-      #    continuous ISO so the harness change is validated against the
-      #    current known-good image.
+      #  - build skipped (tests-only change): take the image from the last
+      #    successful build's artifacts, so the harness change is validated
+      #    against the current known-good image. The .img isn't published:
+      #    the release holds only what people install.
       - name: download built image (artifact)
         if: needs.changes.outputs.build_needed == 'true'
         uses: actions/download-artifact@v4
@@ -412,17 +418,28 @@ jobs:
           path: out/
           merge-multiple: true
 
-      - name: download latest continuous ISO (build skipped)
+      - name: download the last good build's image (build skipped)
         if: needs.changes.outputs.build_needed != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p out
-          gh release download continuous \
-            --repo "$GITHUB_REPOSITORY" \
-            --pattern 'NextBSD-${{ matrix.arch }}-[0-9]*.img.zip' \
-            --dir out/ --clobber
+          # The newest successful main run that built (a tests-only run has no
+          # image artifact, so try them newest first).
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+                         --branch main --status success --limit 30 \
+                         --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+                 --pattern 'NextBSD-${{ matrix.arch }}-[0-9]*' --dir out/ 2>/dev/null; then
+              echo "==> image from run $run"
+              break
+            fi
+          done
+          # download-artifact without merge-multiple puts each artifact in its
+          # own folder; bring the image up to out/ as the boot test expects.
+          find out -mindepth 2 -name 'NextBSD-*' -exec mv {} out/ \;
           ls -lh out/
+          ls out/NextBSD-${{ matrix.arch }}-[0-9]*.img.zip >/dev/null
 
       # qemu-system-arm carries qemu-system-aarch64; qemu-efi-aarch64 supplies
       # /usr/share/qemu-efi-aarch64/QEMU_EFI.fd (the arm64 counterpart of ovmf).
@@ -564,8 +581,8 @@ jobs:
       # publishing, which is a clearer contract than deleting files on the way
       # past, and easier to get right than remembering to re-enable a deletion.
 
-      - name: list release assets
-        run: ls -lh out/NextBSD-*.img.zip out/NextBSD-*.img.zip.sha256 out/NextBSD-*.iso.zip out/NextBSD-*.iso.zip.sha256
+      - name: list build artifacts
+        run: ls -lh out/
 
       # The release notes name the NextBSD version and build the images
       # installed, read off the amd64 ISO's name (NextBSD-amd64-27.0.0-<build>,
@@ -582,33 +599,57 @@ jobs:
           esac
           echo "line=$V" >> "$GITHUB_OUTPUT"
 
+      # The Server Preview release holds only what people install: the amd64
+      # and arm64 live ISOs and the Raspberry Pi 5 image, named
+      # NextBSD-Server-<arch|rpi5>-<version>, with one SHA256SUMS. The amd64 and
+      # arm64 .img stay workflow artifacts for the boot test; they aren't
+      # published. (A Desktop Preview, NextBSD-Desktop-*, will be published
+      # beside it as continuous-desktop.)
+      - name: name the Server Preview files
+        run: |
+          set -eu
+          mkdir pub
+          for f in out/NextBSD-amd64-[0-9]*.iso.zip out/NextBSD-arm64-[0-9]*.iso.zip; do
+            mv "$f" "pub/NextBSD-Server-${f#out/NextBSD-}"
+          done
+          for f in out/NextBSD-arm64-rpi5-[0-9]*.img.zip; do
+            mv "$f" "pub/NextBSD-Server-${f#out/NextBSD-arm64-}"
+          done
+          ( cd pub && sha256sum NextBSD-Server-* > SHA256SUMS )
+          ls -lh pub/
+          cat pub/SHA256SUMS
+          [ "$(ls pub/NextBSD-Server-* | wc -l)" -eq 3 ]
+
       # `gh release create` wedges silently on big ISO uploads (single PUT,
       # no chunking, no retry). softprops/action-gh-release uses Octokit's
       # chunked upload with retries -- canonical path for big release assets.
       # Delete previous continuous release first so old assets don't pile up
       # (safe here: this job is a single cell, so nothing else is uploading).
-      - name: delete previous continuous release
+      - name: delete previous Server Preview release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release delete continuous --yes --cleanup-tag \
+          gh release delete continuous-server --yes --cleanup-tag \
             --repo "$GITHUB_REPOSITORY" || true
 
-      - name: publish to continuous release
+      - name: publish to the Server Preview release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: continuous
-          name: Continuous build
+          tag_name: continuous-server
+          name: Server Preview (continuous)
           body: |
-            Rolling continuous build. Refreshed automatically every push to
-            `main` after the build + boot smoke-test both pass.
+            NextBSD Server Preview: a rolling build, refreshed automatically on
+            every push to `main` once the build and boot test pass.
 
             ${{ steps.version.outputs.line }}
 
-            `NextBSD-arm64-rpi5-*` (Raspberry Pi 5 family: 5 B, 500/500+, CM5)
-            is built from the same rootfs but is **not** boot tested by CI --
-            qemu does not emulate this board. Write it to a USB stick or NVMe
-            and boot it.
+            - `NextBSD-Server-amd64-*.iso.zip`, `NextBSD-Server-arm64-*.iso.zip`:
+              live ISOs for PCs and virtual machines.
+            - `NextBSD-Server-rpi5-*.img.zip`: Raspberry Pi 5 family (5 B,
+              500/500+, CM5). Write it to a USB stick or NVMe and boot it. It is
+              built from the same system but **not** boot tested by CI: qemu
+              does not emulate this board.
+            - `SHA256SUMS`: checksums for all three.
 
             Build log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
             Commit: ${{ github.sha }}
@@ -616,7 +657,5 @@ jobs:
           target_commitish: ${{ github.sha }}
           fail_on_unmatched_files: true
           files: |
-            out/NextBSD-*.img.zip
-            out/NextBSD-*.img.zip.sha256
-            out/NextBSD-*.iso.zip
-            out/NextBSD-*.iso.zip.sha256
+            pub/NextBSD-Server-*
+            pub/SHA256SUMS
