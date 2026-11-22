@@ -38,41 +38,44 @@ entirely differently than those original solutions.
 
 ## Try it in 5 minutes
 
-1. Grab the latest [continuous release][release]. Download
-   `NextBSD-<ARCH>-<STAMP>.img.zip` (the raw disk image; there's also an
-   `.iso.zip`). `<ARCH>` is `amd64` (x86-64) or `arm64` (AArch64) — both
-   are built, boot-tested and published on every merge.
+1. Grab the latest [Server Preview][release]. Download
+   `NextBSD-Server-<ARCH>-<VERSION>.iso.zip`, the live ISO. `<ARCH>` is
+   `amd64` (x86-64) or `arm64` (AArch64); both are built, boot-tested and
+   published on every merge. (`NextBSD-Server-rpi5-*.img.zip` is for the
+   Raspberry Pi 5 family: write it to a USB stick or NVMe and boot it.)
 2. Unzip it (any platform's native tools work — macOS Finder,
    Windows Explorer, `unzip` on Linux/BSD):
 
    ```sh
-   unzip NextBSD-amd64-*.img.zip
+   unzip NextBSD-Server-amd64-*.iso.zip
    ```
 
-3. Boot it in [QEMU](https://www.qemu.org/) (easiest), or `dd` to a
-   USB stick and boot on bare metal:
+3. Boot it in [QEMU](https://www.qemu.org/) (easiest), or write it to a
+   USB stick and boot on bare metal. It runs live from the ISO:
 
    ```sh
    # QEMU, UEFI boot, user-mode network (gives the guest 10.0.2.0/24)
-   img=$(echo NextBSD-amd64-*.img)
+   iso=$(echo NextBSD-Server-amd64-*.iso)
    qemu-system-x86_64 \
-     -accel kvm -cpu host -m 2048 \
+     -accel kvm -cpu host -m 2048 -machine q35 \
      -bios /usr/share/OVMF/OVMF_CODE.fd \
-     -drive file="$img",format=raw,if=virtio \
+     -cdrom "$iso" -boot d \
      -nic user,model=e1000 \
      -nographic
    ```
 
    On arm64 the machine is `virt`, the firmware is AAVMF/`QEMU_EFI.fd`,
-   and virtio-net needs its PXE option ROM turned off (`romfile=`)
-   because the arm64 QEMU packages don't ship one:
+   the ISO goes on a virtio-scsi CD (`virt` has no IDE), and virtio-net
+   needs its PXE option ROM turned off (`romfile=`) because the arm64 QEMU
+   packages don't ship one:
 
    ```sh
-   img=$(echo NextBSD-arm64-*.img)
+   iso=$(echo NextBSD-Server-arm64-*.iso)
    qemu-system-aarch64 \
      -accel kvm -cpu host -m 2048 -machine virt \
      -bios /usr/share/qemu-efi-aarch64/QEMU_EFI.fd \
-     -drive file="$img",format=raw,if=virtio \
+     -drive file="$iso",format=raw,if=none,id=cd0,media=cdrom \
+     -device virtio-scsi-pci -device scsi-cd,drive=cd0,bootindex=0 \
      -netdev user,id=net0 -device virtio-net-pci,netdev=net0,romfile= \
      -nographic
    ```
@@ -84,7 +87,7 @@ entirely differently than those original solutions.
    on `em0`, syslog come up, and the `login:` prompt land. Log in
    as `root` (no password, hit Enter).
 
-[release]: https://github.com/nextbsd/nextbsd/releases/tag/continuous
+[release]: https://github.com/nextbsd/nextbsd/releases/tag/continuous-server
 
 ## Networking just works
 
@@ -193,8 +196,8 @@ cat /etc/os-release      # PRETTY_NAME="NextBSD 27.0.0 (<build>)", VERSION_ID, B
 `/etc/os-release`, which the login banner reads, is generated from the plist:
 by `build.sh` for a fresh image, and on an installed system by
 `NextBSD-everything`'s post-install script, which pkg runs on every upgrade of
-the package. The image and ISO names carry the same pair:
-`NextBSD-<arch>-27.0.0-<build>.img.zip`. Images built from packages that predate
+the package. The published file names carry the same pair:
+`NextBSD-Server-<arch>-27.0.0-<build>.iso.zip`. Images built from packages that predate
 the plist fall back to the build's UTC timestamp (`YYYYMMDD-HHMMSS`) for all of
 these.
 
@@ -225,16 +228,19 @@ prebuilt toolchain container), so those stages never need a FreeBSD host. The
 final image assembly (`build.sh`) then runs inside a **FreeBSD VM**
 (`vmactions/freebsd-vm`) on that same Linux runner — it needs a real FreeBSD
 userland to run `makefs`/`mkimg` and lay the image down — which also boot-tests
-the result and refreshes the `continuous` release on a successful `main` build.
+the result and refreshes the `continuous-server` release on a successful `main` build.
 Because the kernel and base arrive as published artifacts, `build.sh` is a CI
 orchestration step, not a standalone local-build command.
 
 ## Releases
 
-Each successful `main` build publishes versioned assets to the
-[continuous release][release] — the zip-wrapped GPT disk image
-(`NextBSD-<arch>-<stamp>.img.zip`) and ISO (`NextBSD-<arch>-<stamp>.iso.zip`),
-each with a matching `.sha256`. The latest is always at that tag.
+Each successful `main` build publishes the [Server Preview][release]
+(`continuous-server`): the amd64 and arm64 live ISOs
+(`NextBSD-Server-<arch>-<version>.iso.zip`), the Raspberry Pi 5 image
+(`NextBSD-Server-rpi5-<version>.img.zip`) and one `SHA256SUMS`. The latest is
+always at that tag. The amd64 and arm64 GPT disk images CI boot-tests are kept
+as workflow artifacts, not published. A Desktop Preview (`continuous-desktop`)
+will be published beside it once the desktop is packaged.
 
 ## Going deeper
 
