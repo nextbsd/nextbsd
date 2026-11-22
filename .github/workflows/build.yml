@@ -638,8 +638,8 @@ jobs:
           tag_name: continuous-server
           name: Server Preview (continuous)
           body: |
-            NextBSD Server Preview: a rolling build, refreshed automatically on
-            every push to `main` once the build and boot test pass.
+            NextBSD Server Preview: the latest build of NextBSD, replaced each
+            time a new build passes its boot test.
 
             ${{ steps.version.outputs.line }}
 

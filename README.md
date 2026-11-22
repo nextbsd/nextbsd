@@ -41,7 +41,7 @@ entirely differently than those original solutions.
 1. Grab the latest [Server Preview][release]. Download
    `NextBSD-Server-<ARCH>-<VERSION>.iso.zip`, the live ISO. `<ARCH>` is
    `amd64` (x86-64) or `arm64` (AArch64); both are built, boot-tested and
-   published on every merge. (`NextBSD-Server-rpi5-*.img.zip` is for the
+   published with each build. (`NextBSD-Server-rpi5-*.img.zip` is for the
    Raspberry Pi 5 family: write it to a USB stick or NVMe and boot it.)
 2. Unzip it (any platform's native tools work — macOS Finder,
    Windows Explorer, `unzip` on Linux/BSD):
@@ -234,7 +234,7 @@ orchestration step, not a standalone local-build command.
 
 ## Releases
 
-Each successful `main` build publishes the [Server Preview][release]
+Each build of `main` that passes its boot test publishes the [Server Preview][release]
 (`continuous-server`): the amd64 and arm64 live ISOs
 (`NextBSD-Server-<arch>-<version>.iso.zip`), the Raspberry Pi 5 image
 (`NextBSD-Server-rpi5-<version>.img.zip`) and one `SHA256SUMS`. The latest is
