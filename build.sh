@@ -35,11 +35,14 @@
 # mkimg are arch-agnostic.
 #
 # Produces:
-#   out/NextBSD-<arch>-<stamp>.img.zip   GPT disk image (BIOS+UEFI, rw UFS root)
-#   out/NextBSD-<arch>-<stamp>.iso.zip   live ISO (mfsroot -> uzip -> vfs.pivot)
+#   out/NextBSD-<Variant>-<arch>-<stamp>.img.zip   GPT disk image (BIOS+UEFI, rw UFS root)
+#   out/NextBSD-<Variant>-<arch>-<stamp>.iso.zip   live ISO (mfsroot -> uzip -> vfs.pivot)
 #
 # BOARD=rpi500 instead produces one artifact and no ISO:
-#   out/NextBSD-<arch>-rpi5-<stamp>.img.zip   MBR: FAT32 boot + rw UFS root
+#   out/NextBSD-<Variant>-rpi5-<stamp>.img.zip     MBR: FAT32 boot + rw UFS root
+#
+# <Variant> is Server or Desktop, from the meta-package installed (NB_META,
+# below): the Server Preview and Desktop Preview images (nextbsd/nextbsd#678).
 #
 # <stamp> is <version>-<build>, e.g. 27.0.0-42: the ProductVersion and
 # ProductBuildVersion of the system the image installed, from the
@@ -47,9 +50,9 @@
 # nextbsd/nextbsd#680, NextBSD-everything) ships (nextbsd/nextbsd#536). Packages
 # from before nextbsd-pkg shipped that plist have none, and then <stamp> is
 # IMG_DATE, as it always was.
-# The board token comes FIRST and that is load-bearing -- build.yml's release
-# step does IMG=$(ls out/NextBSD-${ARCH}-*.img.zip) into a scalar, so an
-# arch-first name would match two files and break the existing arm64 lane.
+# The board image carries rpi5 where the others carry the arch, so the
+# workflow's NextBSD-<Variant>-arm64-[0-9]* globs (anchored on the stamp's
+# leading digit) never match it.
 
 set -eu
 
@@ -138,6 +141,17 @@ case "$ASSEMBLY" in
     exit 1
     ;;
 esac
+# The image's variant, which names its files: Desktop for NextBSD-desktop,
+# Server otherwise. The desktop exists only as packages, so an artifacts
+# (1:1 component snapshot) image can't be a Desktop one.
+case "$NB_META" in
+  NextBSD-desktop) VARIANT=Desktop ;;
+  *)               VARIANT=Server ;;
+esac
+if [ "$VARIANT" = Desktop ] && [ "$ASSEMBLY" != pkg ]; then
+    echo "ERROR: NB_META=NextBSD-desktop needs ASSEMBLY=pkg (the desktop is only packaged)" >&2
+    exit 1
+fi
 echo "==> assembly mode: $ASSEMBLY"
 
 mkdir -p "$WORK" "$OUT" "$DIST"
@@ -145,7 +159,7 @@ mkdir -p "$WORK" "$OUT" "$DIST"
 chflags -R noschg "$WORK" 2>/dev/null || true
 rm -rf "$WORK"/* "$OUT"/*
 
-echo "==> build: NextBSD $ARCH${BOARD:+ board=$BOARD} (pkg ABI $NB_ABI), stamp $IMG_DATE"
+echo "==> build: NextBSD $VARIANT $ARCH${BOARD:+ board=$BOARD} (pkg ABI $NB_ABI), stamp $IMG_DATE"
 
 # ---------------------------------------------------------------------------
 # 1. src.txz — ONLY for FreeBSD's release script (mkisoimages.sh) in the ISO
@@ -314,6 +328,28 @@ CONF
     fi
     echo "==> pkg install $NB_META into $RF (ABI=$ABI OSVERSION=$OSVERSION)"
     $PKG install -y "$NB_META"
+
+    # A Desktop image boots into the graphical login: NextBSD-desktop-apps'
+    # post-install script (Lua, which pkg runs against the -r root) enables
+    # org.nextbsd.WindowServer and org.nextbsd.loginwindow in launchd's
+    # overrides database, as `launchctl load -w` does. Check it did, and that
+    # the jobs it enabled are there, rather than ship a Desktop image that
+    # boots to a text console (nextbsd/nextbsd#678).
+    if [ "$VARIANT" = Desktop ]; then
+        for _f in System/Library/CoreServices/WindowServer \
+                  System/Library/LaunchDaemons/org.nextbsd.WindowServer.plist \
+                  System/Library/LaunchDaemons/org.nextbsd.loginwindow.plist; do
+            [ -e "$RF/$_f" ] || { echo "ERROR: NextBSD-desktop installed no /$_f" >&2; exit 1; }
+        done
+        _ovr="$RF/private/var/db/launchd.db/com.apple.launchd/overrides.plist"
+        for _l in org.nextbsd.WindowServer org.nextbsd.loginwindow; do
+            grep -A 3 "<key>$_l</key>" "$_ovr" 2>/dev/null | grep -q '<false/>' || {
+                echo "ERROR: $_l is not enabled in /var/db/launchd.db/com.apple.launchd/overrides.plist (NextBSD-desktop-apps' post-install script)" >&2
+                exit 1
+            }
+        done
+        echo "==> desktop: org.nextbsd.WindowServer and org.nextbsd.loginwindow start at boot"
+    fi
 fi
 
 # Fail loudly if the assembly laid down nothing (empty rootfs -> later steps
@@ -519,7 +555,7 @@ ID=nextbsd
 ID_LIKE=freebsd
 HOME_URL="https://nextbsd.org"
 OSREL
-    # Image and ISO names: NextBSD-<arch>-27.0.0-<build>. It starts with a
+    # Image and ISO names: NextBSD-<Variant>-<arch>-27.0.0-<build>. It starts with a
     # digit, like the datestamp did, so the workflow's [0-9]* globs still
     # tell it from the rpi5 board image.
     IMG_STAMP="${NB_VERSION}-${NB_BUILD}"
@@ -974,11 +1010,11 @@ CFG
     # NVMe (dos label, p1 type 0x0c FAT32-LBA, p2 the OS). fat32lba is that
     # 0x0c; a plain fat32 (0x0b) is CHS-addressed and the wrong type here.
     echo "==> mkimg: MBR disk image (FAT32 boot + freebsd root)"
-    # Arch first, board second: NextBSD-arm64-rpi5-<stamp>.img. Sorts with the
-    # other arm64 images, and the globs that consume these are anchored on the
-    # stamp's leading digit ([0-9]*) so a board token can never be mistaken
-    # for one.
-    IMG_NAME="NextBSD-${ARCH}-rpi5-${IMG_STAMP}.img"
+    # NextBSD-<Variant>-rpi5-<stamp>.img: rpi5 where the other images carry
+    # the arch, and the name the release publishes. The workflow's globs for
+    # the arm64 images are anchored on the stamp's leading digit
+    # (NextBSD-<Variant>-arm64-[0-9]*), so this one never matches them.
+    IMG_NAME="NextBSD-${VARIANT}-rpi5-${IMG_STAMP}.img"
     mkimg -s mbr -f raw \
         -p fat32lba:="$WORK/rpiboot.img" \
         -p freebsd:="$WORK/rootfs.ufs" \
@@ -1025,11 +1061,10 @@ makefs -t msdos \
 #     partition) AND UEFI (the efi/ESP partition). freebsd-ufs is the
 #     read-write root.
 echo "==> mkimg: GPT disk image"
-# NextBSD-branded image name, NextBSD-<arch>-<stamp>.img (step 6: 27.0.0-<build>,
-# or the datestamp) — identical to the published continuous asset, so the build
-# output is uploaded + published as-is (no rename). img-boot-test.sh discovers
-# the member by its .img extension.
-IMG_NAME="NextBSD-${ARCH}-${IMG_STAMP}.img"
+# NextBSD-<Variant>-<arch>-<stamp>.img (step 6: 27.0.0-<build>, or the
+# datestamp). CI boot-tests it and keeps it as a workflow artifact; it isn't
+# published. img-boot-test.sh discovers the member by its .img extension.
+IMG_NAME="NextBSD-${VARIANT}-${ARCH}-${IMG_STAMP}.img"
 # BIOS boot blocks (pmbr/gptboot) only exist on amd64; arm64 is UEFI-only, so
 # fall back to an ESP-only GPT there (same arch split the installer uses).
 if [ -f "$WORK/rootfs/boot/pmbr" ] && [ -f "$WORK/rootfs/boot/gptboot" ]; then
@@ -1307,7 +1342,7 @@ cp "$WORK/rootfs.uzip" "$ISOROOT/rootfs.uzip"
 
 # 7e. Build the bootable cd9660 (BIOS cdboot + UEFI ESP) via the release script
 #     (extracted from src.txz at step 3a; lands under usr/src/ — locate by glob).
-ISO_NAME="NextBSD-${ARCH}-${IMG_STAMP}.iso"
+ISO_NAME="NextBSD-${VARIANT}-${ARCH}-${IMG_STAMP}.iso"
 # amd64 gets BIOS (El Torito cdboot) + UEFI; arm64 is UEFI-only, same split as
 # the GPT disk image above.
 echo "==> mkisoimages.sh: bootable cd9660 ($([ -f "$ISOROOT/boot/cdboot" ] && echo 'BIOS + UEFI' || echo 'UEFI-only'))"

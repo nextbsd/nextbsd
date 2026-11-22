@@ -18,7 +18,8 @@ on:
   # components are gated upstream (nextbsd-pkg builds manually), so nextbsd no
   # longer auto-rebuilds the image when a component publishes a new
   # `continuous` artifact. It builds on a push to main, a PR, or a
-  # hand-triggered run (workflow_dispatch rebuilds + republishes `continuous`).
+  # hand-triggered run (workflow_dispatch rebuilds + republishes
+  # `continuous-server` and `continuous-desktop`).
   workflow_dispatch:
 
 permissions:
@@ -82,7 +83,7 @@ jobs:
           echo "==> build_needed=$need"
 
   build:
-    name: build (${{ matrix.arch }})
+    name: build (${{ matrix.variant }} ${{ matrix.arch }})
     needs: changes
     if: needs.changes.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
@@ -103,11 +104,21 @@ jobs:
         # this amd64 VM's BOOTX64.EFI instead of BOOTAA64.EFI, so no arm64
         # firmware would boot it — and the img-test/iso-test jobs below have an
         # arm64 leg on a native-ARM runner.
+        #
+        # `variant` is the preview a leg builds (nextbsd/nextbsd#678), both
+        # from the same package repository: Server installs NextBSD-server,
+        # Desktop installs NextBSD-desktop (NextBSD-server plus GNUstep and the
+        # desktop). build.sh names the files after it
+        # (NextBSD-<variant>-<arch>-<stamp>.*). Every leg is its own VM, so
+        # the four run in parallel and the wall time stays one leg's.
+        freebsd: ['15.1']
+        arch: ['amd64', 'arm64']
+        variant: ['Server', 'Desktop']
         include:
-          - freebsd: '15.1'
-            arch: 'amd64'
-          - freebsd: '15.1'
-            arch: 'arm64'
+          - variant: 'Server'
+            meta: 'NextBSD-server'
+          - variant: 'Desktop'
+            meta: 'NextBSD-desktop'
     steps:
       - uses: actions/checkout@v4
 
@@ -124,7 +135,7 @@ jobs:
 
       # Compute the datestamp once on the host and pass it into the VM. The
       # image is named after the version and build of the NextBSD-server
-      # it installs (NextBSD-<arch>-27.0.0-<build>.img.zip, from its
+      # it installs (NextBSD-<variant>-<arch>-27.0.0-<build>.img.zip, from its
       # SystemVersion.plist; nextbsd/nextbsd#536, #680), which only build.sh knows,
       # so the steps after the build read the stamp off the file it wrote.
       # The datestamp is the stamp only for packages from before that plist.
@@ -174,43 +185,63 @@ jobs:
             export IMG_DATE=${{ steps.meta.outputs.date }}
             # Every image this repo publishes assembles from nextbsd-pkg
             # (pkg install NextBSD-server, the Server Preview's meta-package,
-            # nextbsd/nextbsd#680; build.sh falls back to NextBSD-everything
-            # for a repo published before it) via this repo's own build.sh:
+            # nextbsd/nextbsd#680, where build.sh falls back to
+            # NextBSD-everything for a repo published before it; or
+            # NextBSD-desktop, the Desktop Preview's, #678) via this repo's
+            # own build.sh:
             # the image ships pkg, its database and the in-image repo config,
             # so an installed system can `pkg update` / `pkg upgrade` out of
             # the box. nextbsd-ci is NOT used for assembly here — only for
             # the img/iso boot-test harness (tests/*-boot-test.sh). Image
             # freshness follows nextbsd-pkg's last (manual) publish.
             export ASSEMBLY=pkg
-            export NB_META=NextBSD-server
+            export NB_META=${{ matrix.meta }}
             sh build.sh
 
       - name: checksum + summary
         id: files
+        env:
+          P: NextBSD-${{ matrix.variant }}-${{ matrix.arch }}
         run: |
           ls -lh out/
-          # The one image build.sh wrote: NextBSD-<arch>-<stamp>.img.zip.
-          IMG=$(cd out && ls NextBSD-${{ matrix.arch }}-[0-9]*.img.zip)
-          STAMP=${IMG#NextBSD-${{ matrix.arch }}-}; STAMP=${STAMP%.img.zip}
-          ISO="NextBSD-${{ matrix.arch }}-${STAMP}.iso.zip"
+          # The one image build.sh wrote: NextBSD-<variant>-<arch>-<stamp>.img.zip.
+          IMG=$(cd out && ls "$P"-[0-9]*.img.zip)
+          STAMP=${IMG#"$P"-}; STAMP=${STAMP%.img.zip}
+          ISO="$P-${STAMP}.iso.zip"
           ( cd out && sha256sum "$IMG" > "$IMG.sha256" )
           ( cd out && sha256sum "$ISO" > "$ISO.sha256" )
           cat "out/$IMG.sha256" "out/$ISO.sha256"
           echo "stamp=$STAMP" >> "$GITHUB_OUTPUT"
+          # The ISO is published unzipped, and GitHub takes release assets of
+          # up to 2 GiB each: fail here, not in the release job.
+          ISOSZ=$(unzip -l "out/$ISO" | awk 'END {print $1}')
+          {
+            echo "### ${{ matrix.variant }} ${{ matrix.arch }}"
+            echo
+            echo "| file | bytes |"
+            echo "|---|---|"
+            echo "| \`$IMG\` (CI only) | $(stat -c %s "out/$IMG") |"
+            echo "| \`${ISO%.zip}\` (published) | $ISOSZ |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "==> ${ISO%.zip}: $ISOSZ bytes"
+          if [ "$ISOSZ" -ge 2147483648 ]; then
+            echo "::error::${ISO%.zip} is $ISOSZ bytes, over GitHub's 2 GiB limit for a release asset"
+            exit 1
+          fi
 
       # compression-level: 0 — the .img.zip is already DEFLATE-9; the outer
       # artifact wrapper just stores it (no recompression). GitHub always
       # wraps an uploaded artifact in its own <name>.zip on download, so the
-      # content stays a single NextBSD-<arch>-<stamp>.img.zip inside —
-      # the exact file the release job publishes to `continuous`, no rename.
+      # content stays the NextBSD-<variant>-<arch>-<stamp>.{img,iso}.zip
+      # build.sh wrote; the release job unzips the ISO to publish it.
       - uses: actions/upload-artifact@v4
         with:
-          name: NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}
+          name: NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}
           path: |
-            out/NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.img.zip
-            out/NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.img.zip.sha256
-            out/NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.iso.zip
-            out/NextBSD-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.iso.zip.sha256
+            out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.img.zip
+            out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.img.zip.sha256
+            out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.iso.zip
+            out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-${{ steps.files.outputs.stamp }}.iso.zip.sha256
           compression-level: 0
           retention-days: 14
           if-no-files-found: error
@@ -238,14 +269,26 @@ jobs:
   # FreeBSD VM, plus a kernel download) always finished last. The hold-back
   # was a race that happened to fall the same way every time, not a gate.
   #
+  # Like the build job it builds both variants, Server and Desktop
+  # (nextbsd/nextbsd#678), as two parallel legs.
+  #
   # This is still the one published asset no CI boot vouches for. The release
   # notes say so.
   build-rpi5:
-    name: build (rpi5 arm64)
+    name: build (${{ matrix.variant }} rpi5 arm64)
     needs: changes
     if: needs.changes.outputs.build_needed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same two variants as the build job.
+        include:
+          - variant: 'Server'
+            meta: 'NextBSD-server'
+          - variant: 'Desktop'
+            meta: 'NextBSD-desktop'
     steps:
       - uses: actions/checkout@v4
 
@@ -318,41 +361,48 @@ jobs:
             # Same as the build job above: pkg-assembled from nextbsd-pkg via
             # this repo's own build.sh; nextbsd-ci is boot-tests only.
             export ASSEMBLY=pkg
-            export NB_META=NextBSD-server
+            export NB_META=${{ matrix.meta }}
             sh build.sh
 
       - name: checksum + summary
         id: files
+        env:
+          P: NextBSD-${{ matrix.variant }}-rpi5
         run: |
           ls -lh out/
-          # NextBSD-arm64-rpi5-<stamp>.img.zip, named by build.sh (see the
-          # build job's checksum step).
-          IMG=$(cd out && ls NextBSD-arm64-rpi5-[0-9]*.img.zip)
-          STAMP=${IMG#NextBSD-arm64-rpi5-}; STAMP=${STAMP%.img.zip}
+          # NextBSD-<variant>-rpi5-<stamp>.img.zip, named by build.sh (see the
+          # build job's checksum step): already the name the release publishes.
+          IMG=$(cd out && ls "$P"-[0-9]*.img.zip)
+          STAMP=${IMG#"$P"-}; STAMP=${STAMP%.img.zip}
           echo "stamp=$STAMP" >> "$GITHUB_OUTPUT"
           ( cd out && sha256sum "$IMG" > "$IMG.sha256" )
           cat "out/$IMG.sha256"
+          SZ=$(stat -c %s "out/$IMG")
           {
-            echo "### Raspberry Pi 500+ image"
+            echo "### Raspberry Pi 500+ image (${{ matrix.variant }})"
             echo
-            echo "\`$IMG\`"
+            echo "\`$IMG\`: $SZ bytes"
             echo
             echo "Not boot tested by CI -- qemu does not emulate this board."
             echo "Write it to a USB stick or NVMe and boot it to prove it."
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SZ" -ge 2147483648 ]; then
+            echo "::error::$IMG is $SZ bytes, over GitHub's 2 GiB limit for a release asset"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NextBSD-arm64-rpi5-${{ steps.files.outputs.stamp }}
+          name: NextBSD-${{ matrix.variant }}-rpi5-${{ steps.files.outputs.stamp }}
           path: |
-            out/NextBSD-arm64-rpi5-${{ steps.files.outputs.stamp }}.img.zip
-            out/NextBSD-arm64-rpi5-${{ steps.files.outputs.stamp }}.img.zip.sha256
+            out/NextBSD-${{ matrix.variant }}-rpi5-${{ steps.files.outputs.stamp }}.img.zip
+            out/NextBSD-${{ matrix.variant }}-rpi5-${{ steps.files.outputs.stamp }}.img.zip.sha256
           compression-level: 0
           retention-days: 14
           if-no-files-found: error
 
   img-test:
-    name: img-test (${{ matrix.arch }})
+    name: img-test (${{ matrix.variant }} ${{ matrix.arch }})
     needs: [changes, build]
     # LIGHT boot smoke test of the installed disk image (.img): boot it in qemu
     # and confirm launchd PID 1 reaches a getty login prompt on a UFS root. The
@@ -385,27 +435,32 @@ jobs:
     # same-arch TCG — measured at ~1m50s per boot job, comparable to the
     # KVM-accelerated amd64 leg. The shared nextbsd-ci harness (qemu-arch.sh)
     # picks KVM whenever /dev/kvm shows up, so these legs get faster for free.
+    #
+    # Both variants boot (nextbsd/nextbsd#678). A Desktop image starts
+    # WindowServer and loginwindow at boot, but CI's console is serial, where
+    # the getty job still runs getty (it only leaves ttyv0 to loginwindow),
+    # so it reaches the same login prompt; NB_DESKTOP=1 then also checks, on
+    # the booted system, that both jobs are loaded and that launchd started
+    # the WindowServer (tests/desktop-check.exp.inc).
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        arch: ['amd64', 'arm64']
+        variant: ['Server', 'Desktop']
         include:
-          - freebsd: '15.1'
-            variant: '15.1-RELEASE'
-            arch: 'amd64'
+          - arch: 'amd64'
             runner: 'ubuntu-24.04'
-          - freebsd: '15.1'
-            variant: '15.1-RELEASE'
-            arch: 'arm64'
+          - arch: 'arm64'
             runner: 'ubuntu-24.04-arm'
     steps:
       - uses: actions/checkout@v4
 
       # Image source depends on whether the build ran:
       #  - build ran: download whatever the build job produced (the
-      #    NextBSD-<arch>-<stamp> artifact), located by glob (avoids threading
-      #    the stamp).
+      #    NextBSD-<variant>-<arch>-<stamp> artifact), located by glob (avoids
+      #    threading the stamp).
       #  - build skipped (tests-only change): take the image from the last
       #    successful build's artifacts, so the harness change is validated
       #    against the current known-good image. The .img isn't published:
@@ -414,11 +469,10 @@ jobs:
         if: needs.changes.outputs.build_needed == 'true'
         uses: actions/download-artifact@v4
         with:
-          # Only THIS arch's artifact — the matrix builds both, and a bare glob
-          # would otherwise match both arches' images.
-          # [0-9]* anchors on the stamp's leading digit: NextBSD-arm64-rpi5-... must not
-          # be swallowed by the glob for the generic NextBSD-arm64-... image.
-          pattern: NextBSD-${{ matrix.arch }}-[0-9]*
+          # Only THIS variant's and arch's artifact — the matrix builds four,
+          # and a looser glob would match the others' images. [0-9]* anchors
+          # on the stamp's leading digit.
+          pattern: NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*
           path: out/
           merge-multiple: true
 
@@ -434,7 +488,7 @@ jobs:
                          --branch main --status success --limit 30 \
                          --json databaseId --jq '.[].databaseId'); do
             if gh run download "$run" --repo "$GITHUB_REPOSITORY" \
-                 --pattern 'NextBSD-${{ matrix.arch }}-[0-9]*' --dir out/ 2>/dev/null; then
+                 --pattern 'NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*' --dir out/ 2>/dev/null; then
               echo "==> image from run $run"
               break
             fi
@@ -443,7 +497,7 @@ jobs:
           # own folder; bring the image up to out/ as the boot test expects.
           find out -mindepth 2 -name 'NextBSD-*' -exec mv {} out/ \;
           ls -lh out/
-          ls out/NextBSD-${{ matrix.arch }}-[0-9]*.img.zip >/dev/null
+          ls out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*.img.zip >/dev/null
 
       # qemu-system-arm carries qemu-system-aarch64; qemu-efi-aarch64 supplies
       # /usr/share/qemu-efi-aarch64/QEMU_EFI.fd (the arm64 counterpart of ovmf).
@@ -459,11 +513,10 @@ jobs:
       - name: boot test
         env:
           ARCH: ${{ matrix.arch }}
+          NB_DESKTOP: ${{ matrix.variant == 'Desktop' && '1' || '' }}
         run: |
           chmod +x tests/img-boot-test.sh
-          # A bare glob would match the board image too and put two paths
-          # into a scalar. Anchor on the stamp's leading digit.
-          IMG=$(ls out/NextBSD-${{ matrix.arch }}-[0-9]*.img.zip)
+          IMG=$(ls out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*.img.zip)
           ./tests/img-boot-test.sh "$IMG"
 
       - name: dump img boot serial log
@@ -476,7 +529,7 @@ jobs:
           fi
 
   iso-test:
-    name: iso-test (live ISO ${{ matrix.arch }})
+    name: iso-test (live ISO ${{ matrix.variant }} ${{ matrix.arch }})
     needs: [changes, build]
     # Boot the freshly-built live ISO (qemu -cdrom) to validate the on-demand
     # uzip + unionfs + vfs.pivot live-root pipeline (nextbsd #70). Requires a
@@ -486,11 +539,14 @@ jobs:
     # Skipped on push-to-main (same flaky-serial rationale as the disk `img-test`).
     if: "!cancelled() && needs.build.result == 'success' && needs.changes.outputs.build_needed == 'true' && github.event_name != 'push'"
     # Native-arch runners, same rationale as img-test.
+    # Both variants, with the same desktop check as img-test for Desktop.
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
+        arch: ['amd64', 'arm64']
+        variant: ['Server', 'Desktop']
         include:
           - arch: 'amd64'
             runner: 'ubuntu-24.04'
@@ -502,9 +558,9 @@ jobs:
       - name: download built ISO (artifact)
         uses: actions/download-artifact@v4
         with:
-          # [0-9]* anchors on the stamp's leading digit: NextBSD-arm64-rpi5-... must not
-          # be swallowed by the glob for the generic NextBSD-arm64-... image.
-          pattern: NextBSD-${{ matrix.arch }}-[0-9]*
+          # This variant's and arch's artifact only; [0-9]* anchors on the
+          # stamp's leading digit.
+          pattern: NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*
           path: out/
           merge-multiple: true
 
@@ -520,9 +576,10 @@ jobs:
       - name: iso boot test
         env:
           ARCH: ${{ matrix.arch }}
+          NB_DESKTOP: ${{ matrix.variant == 'Desktop' && '1' || '' }}
         run: |
           chmod +x tests/iso-boot-test.sh
-          ISO=$(ls out/NextBSD-${{ matrix.arch }}-*.iso.zip)
+          ISO=$(ls out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*.iso.zip)
           ./tests/iso-boot-test.sh "$ISO"
 
       - name: dump live ISO serial log
@@ -539,7 +596,7 @@ jobs:
     needs: [build, build-rpi5, img-test]
     # Publish on main from a push to this repo, or a manual run
     # (workflow_dispatch: a hand-triggered "Run workflow" republishes
-    # `continuous`). PRs and other branches never publish. (T11 removed the
+    # `continuous-server` and `continuous-desktop`). PRs and other branches never publish. (T11 removed the
     # upstream repository_dispatch cascade, so a component publish no longer
     # republishes here -- a push to main is the release act.)
     #
@@ -558,8 +615,10 @@ jobs:
     # no-republish via build.result.
     if: ${{ always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && needs.build.result == 'success' && needs['build-rpi5'].result == 'success' && (needs['img-test'].result == 'success' || needs['img-test'].result == 'skipped') }}
     #
-    # Deliberately NOT a matrix: one job publishes EVERY arch's artifacts in a
-    # single `continuous` release. A per-arch matrix would run the delete-then-
+    # Deliberately NOT a matrix: one job publishes EVERY leg's artifacts, the
+    # Server set to `continuous-server` and the Desktop set to
+    # `continuous-desktop` (nextbsd/nextbsd#678). Both publish or neither does:
+    # `needs` is all-or-nothing over the matrix legs. A per-arch matrix would run the delete-then-
     # publish sequence once per cell, and the second cell's delete would drop the
     # first cell's freshly-uploaded assets (the race the old comment here
     # predicted for exactly this moment — the arm64 leg landing).
@@ -569,10 +628,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Pull EVERY arch's artifact (no `pattern`) — each
-      # NextBSD-<arch>-<stamp>.img.zip is already the final published name, so
-      # there is nothing to rename or recompute here; publish them straight to
-      # `continuous`.
+      # Pull EVERY leg's artifact (no `pattern`): the Server and Desktop
+      # NextBSD-<variant>-<arch>-<stamp>.{img,iso}.zip and
+      # NextBSD-<variant>-rpi5-<stamp>.img.zip. The variant in the names keeps
+      # the two sets apart in one directory.
       - uses: actions/download-artifact@v4
         with:
           path: out/
@@ -589,54 +648,62 @@ jobs:
         run: ls -lh out/
 
       # The release notes name the NextBSD version and build the images
-      # installed, read off the amd64 ISO's name (NextBSD-amd64-27.0.0-<build>,
-      # nextbsd/nextbsd#536). Images from packages without SystemVersion.plist
+      # installed, read off the Server amd64 ISO's name
+      # (NextBSD-Server-amd64-27.0.0-<build>, nextbsd/nextbsd#536); both
+      # variants come from the same package repository, so the Desktop images
+      # carry the same pair. Images from packages without SystemVersion.plist
       # carry a datestamp instead, and the notes say so.
       - name: image version
         id: version
         run: |
-          ISO=$(cd out && ls NextBSD-amd64-[0-9]*.iso.zip)
-          STAMP=${ISO#NextBSD-amd64-}; STAMP=${STAMP%.iso.zip}
+          ISO=$(cd out && ls NextBSD-Server-amd64-[0-9]*.iso.zip)
+          STAMP=${ISO#NextBSD-Server-amd64-}; STAMP=${STAMP%.iso.zip}
           case "$STAMP" in
-            *.*.*-*) V="NextBSD ${STAMP%-*} (${STAMP##*-}), the version and build of the NextBSD-server these images install." ;;
-            *)       V="Images stamped ${STAMP}: their packages predate SystemVersion.plist, so they carry no version." ;;
+            *.*.*-*)
+              S="NextBSD ${STAMP%-*} (${STAMP##*-}), the version and build of the NextBSD-server these images install."
+              D="NextBSD ${STAMP%-*} (${STAMP##*-}), the version and build of the NextBSD-desktop these images install." ;;
+            *)
+              S="Images stamped ${STAMP}: their packages predate SystemVersion.plist, so they carry no version."
+              D="$S" ;;
           esac
-          echo "line=$V" >> "$GITHUB_OUTPUT"
+          echo "server=$S" >> "$GITHUB_OUTPUT"
+          echo "desktop=$D" >> "$GITHUB_OUTPUT"
 
-      # The Server Preview release holds only what people install: the amd64
-      # and arm64 live ISOs and the Raspberry Pi 5 image, named
-      # NextBSD-Server-<arch|rpi5>-<version>, with one SHA256SUMS. The ISOs are
-      # published as plain .iso: their root is already compressed inside, so
-      # a zip saved only ~13%, and a plain .iso boots or writes without an
-      # unzip. The Pi image stays zipped: raw it's 2.4 GB of mostly empty
-      # filesystem (over GitHub's 2 GB per-file limit); zipped it's ~190 MB,
-      # and Raspberry Pi Imager and Etcher write .img.zip directly. The amd64 and
-      # arm64 .img stay workflow artifacts for the boot test; they aren't
-      # published. (A Desktop Preview, NextBSD-Desktop-*, will be published
-      # beside it as continuous-desktop.)
-      - name: name the Server Preview files
+      # Each release holds only what people install: the amd64 and arm64 live
+      # ISOs and the Raspberry Pi 5 image, named
+      # NextBSD-<Server|Desktop>-<arch|rpi5>-<version>, with one SHA256SUMS
+      # per release. The ISOs are published as plain .iso: their root is
+      # already compressed inside, so a zip saved only ~13%, and a plain .iso
+      # boots or writes without an unzip. The Pi image stays zipped: raw it's
+      # 2.4 GB of mostly empty filesystem (over GitHub's 2 GB per-file limit);
+      # zipped it's ~190 MB, and Raspberry Pi Imager and Etcher write .img.zip
+      # directly. The amd64 and arm64 .img stay workflow artifacts for the boot
+      # test; they aren't published.
+      - name: name the Server and Desktop Preview files
         run: |
           set -eu
-          mkdir pub
-          for f in out/NextBSD-amd64-[0-9]*.iso.zip out/NextBSD-arm64-[0-9]*.iso.zip; do
-            iso=$(unzip -Z1 "$f" | grep -E '\.iso$' | head -1)
-            [ -n "$iso" ] || { echo "::error::no .iso in $f"; exit 1; }
-            n=${f#out/NextBSD-}
-            unzip -p "$f" "$iso" > "pub/NextBSD-Server-${n%.zip}"
+          for v in Server Desktop; do
+            mkdir -p "pub/$v"
+            for f in out/NextBSD-$v-amd64-[0-9]*.iso.zip out/NextBSD-$v-arm64-[0-9]*.iso.zip; do
+              iso=$(unzip -Z1 "$f" | grep -E '\.iso$' | head -1)
+              [ -n "$iso" ] || { echo "::error::no .iso in $f"; exit 1; }
+              n=${f#out/}
+              unzip -p "$f" "$iso" > "pub/$v/${n%.zip}"
+            done
+            for f in out/NextBSD-$v-rpi5-[0-9]*.img.zip; do
+              mv "$f" "pub/$v/"
+            done
+            ( cd "pub/$v" && sha256sum NextBSD-$v-* > SHA256SUMS )
+            ls -lh "pub/$v/"
+            cat "pub/$v/SHA256SUMS"
+            [ "$(ls pub/$v/NextBSD-$v-* | wc -l)" -eq 3 ]
           done
-          for f in out/NextBSD-arm64-rpi5-[0-9]*.img.zip; do
-            mv "$f" "pub/NextBSD-Server-${f#out/NextBSD-arm64-}"
-          done
-          ( cd pub && sha256sum NextBSD-Server-* > SHA256SUMS )
-          ls -lh pub/
-          cat pub/SHA256SUMS
-          [ "$(ls pub/NextBSD-Server-* | wc -l)" -eq 3 ]
 
       # `gh release create` wedges silently on big ISO uploads (single PUT,
       # no chunking, no retry). softprops/action-gh-release uses Octokit's
       # chunked upload with retries -- canonical path for big release assets.
-      # Delete previous continuous release first so old assets don't pile up
-      # (safe here: this job is a single cell, so nothing else is uploading).
+      # Delete each previous release first so old assets don't pile up (safe
+      # here: this job is a single cell, so nothing else is uploading).
       - name: delete previous Server Preview release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -653,7 +720,7 @@ jobs:
             NextBSD Server Preview: the latest build of NextBSD, replaced each
             time a new build passes its boot test.
 
-            ${{ steps.version.outputs.line }}
+            ${{ steps.version.outputs.server }}
 
             - `NextBSD-Server-amd64-*.iso`, `NextBSD-Server-arm64-*.iso`: live
               ISOs for PCs and virtual machines.
@@ -669,5 +736,42 @@ jobs:
           target_commitish: ${{ github.sha }}
           fail_on_unmatched_files: true
           files: |
-            pub/NextBSD-Server-*
-            pub/SHA256SUMS
+            pub/Server/NextBSD-Server-*
+            pub/Server/SHA256SUMS
+
+      - name: delete previous Desktop Preview release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete continuous-desktop --yes --cleanup-tag \
+            --repo "$GITHUB_REPOSITORY" || true
+
+      - name: publish to the Desktop Preview release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous-desktop
+          name: Desktop Preview (continuous)
+          body: |
+            NextBSD Desktop Preview: the latest build of NextBSD with its
+            desktop, replaced each time a new build passes its boot test. It
+            starts the graphical login at boot; the Server Preview is the same
+            system without the desktop.
+
+            ${{ steps.version.outputs.desktop }}
+
+            - `NextBSD-Desktop-amd64-*.iso`, `NextBSD-Desktop-arm64-*.iso`: live
+              ISOs for PCs and virtual machines.
+            - `NextBSD-Desktop-rpi5-*.img.zip`: Raspberry Pi 5 family (5 B,
+              500/500+, CM5). Write it to a USB stick or NVMe and boot it. It is
+              built from the same system but **not** boot tested by CI: qemu
+              does not emulate this board.
+            - `SHA256SUMS`: checksums for all three.
+
+            Build log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+            Commit: ${{ github.sha }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          fail_on_unmatched_files: true
+          files: |
+            pub/Desktop/NextBSD-Desktop-*
+            pub/Desktop/SHA256SUMS
