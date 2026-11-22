@@ -39,18 +39,11 @@ entirely differently than those original solutions.
 ## Try it in 5 minutes
 
 1. Grab the latest [Server Preview][release]. Download
-   `NextBSD-Server-<ARCH>-<VERSION>.iso.zip`, the live ISO. `<ARCH>` is
+   `NextBSD-Server-<ARCH>-<VERSION>.iso`, the live ISO. `<ARCH>` is
    `amd64` (x86-64) or `arm64` (AArch64); both are built, boot-tested and
    published with each build. (`NextBSD-Server-rpi5-*.img.zip` is for the
    Raspberry Pi 5 family: write it to a USB stick or NVMe and boot it.)
-2. Unzip it (any platform's native tools work — macOS Finder,
-   Windows Explorer, `unzip` on Linux/BSD):
-
-   ```sh
-   unzip NextBSD-Server-amd64-*.iso.zip
-   ```
-
-3. Boot it in [QEMU](https://www.qemu.org/) (easiest), or write it to a
+2. Boot it in [QEMU](https://www.qemu.org/) (easiest), or write it to a
    USB stick and boot on bare metal. It runs live from the ISO:
 
    ```sh
@@ -83,7 +76,7 @@ entirely differently than those original solutions.
    (`-accel kvm -cpu host` only works when the host is the same
    architecture as the image; drop it for emulation, which is slow.)
 
-4. Wait ~10 seconds. You'll see launchd start its daemons, DHCP fire
+3. Wait ~10 seconds. You'll see launchd start its daemons, DHCP fire
    on `em0`, syslog come up, and the `login:` prompt land. Log in
    as `root` (no password, hit Enter).
 
@@ -197,7 +190,7 @@ cat /etc/os-release      # PRETTY_NAME="NextBSD 27.0.0 (<build>)", VERSION_ID, B
 by `build.sh` for a fresh image, and on an installed system by
 `NextBSD-everything`'s post-install script, which pkg runs on every upgrade of
 the package. The published file names carry the same pair:
-`NextBSD-Server-<arch>-27.0.0-<build>.iso.zip`. Images built from packages that predate
+`NextBSD-Server-<arch>-27.0.0-<build>.iso`. Images built from packages that predate
 the plist fall back to the build's UTC timestamp (`YYYYMMDD-HHMMSS`) for all of
 these.
 
@@ -236,7 +229,7 @@ orchestration step, not a standalone local-build command.
 
 Each build of `main` that passes its boot test publishes the [Server Preview][release]
 (`continuous-server`): the amd64 and arm64 live ISOs
-(`NextBSD-Server-<arch>-<version>.iso.zip`), the Raspberry Pi 5 image
+(`NextBSD-Server-<arch>-<version>.iso`), the Raspberry Pi 5 image
 (`NextBSD-Server-rpi5-<version>.img.zip`) and one `SHA256SUMS`. The latest is
 always at that tag. The amd64 and arm64 GPT disk images CI boot-tests are kept
 as workflow artifacts, not published. A Desktop Preview (`continuous-desktop`)

@@ -601,7 +601,12 @@ jobs:
 
       # The Server Preview release holds only what people install: the amd64
       # and arm64 live ISOs and the Raspberry Pi 5 image, named
-      # NextBSD-Server-<arch|rpi5>-<version>, with one SHA256SUMS. The amd64 and
+      # NextBSD-Server-<arch|rpi5>-<version>, with one SHA256SUMS. The ISOs are
+      # published as plain .iso: their root is already compressed inside, so
+      # a zip saved only ~13%, and a plain .iso boots or writes without an
+      # unzip. The Pi image stays zipped: raw it's 2.4 GB of mostly empty
+      # filesystem (over GitHub's 2 GB per-file limit); zipped it's ~190 MB,
+      # and Raspberry Pi Imager and Etcher write .img.zip directly. The amd64 and
       # arm64 .img stay workflow artifacts for the boot test; they aren't
       # published. (A Desktop Preview, NextBSD-Desktop-*, will be published
       # beside it as continuous-desktop.)
@@ -610,7 +615,10 @@ jobs:
           set -eu
           mkdir pub
           for f in out/NextBSD-amd64-[0-9]*.iso.zip out/NextBSD-arm64-[0-9]*.iso.zip; do
-            mv "$f" "pub/NextBSD-Server-${f#out/NextBSD-}"
+            iso=$(unzip -Z1 "$f" | grep -E '\.iso$' | head -1)
+            [ -n "$iso" ] || { echo "::error::no .iso in $f"; exit 1; }
+            n=${f#out/NextBSD-}
+            unzip -p "$f" "$iso" > "pub/NextBSD-Server-${n%.zip}"
           done
           for f in out/NextBSD-arm64-rpi5-[0-9]*.img.zip; do
             mv "$f" "pub/NextBSD-Server-${f#out/NextBSD-arm64-}"
@@ -643,8 +651,8 @@ jobs:
 
             ${{ steps.version.outputs.line }}
 
-            - `NextBSD-Server-amd64-*.iso.zip`, `NextBSD-Server-arm64-*.iso.zip`:
-              live ISOs for PCs and virtual machines.
+            - `NextBSD-Server-amd64-*.iso`, `NextBSD-Server-arm64-*.iso`: live
+              ISOs for PCs and virtual machines.
             - `NextBSD-Server-rpi5-*.img.zip`: Raspberry Pi 5 family (5 B,
               500/500+, CM5). Write it to a USB stick or NVMe and boot it. It is
               built from the same system but **not** boot tested by CI: qemu
