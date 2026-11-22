@@ -3,10 +3,12 @@
 #
 # ASSEMBLY selects how the rootfs gets the OS:
 #   pkg (default — every image this repo publishes)
-#       One `pkg install NextBSD-everything` from the nextbsd-pkg flat repo,
-#       done by this repo's own build.sh. nextbsd-ci is used by this repo
+#       One `pkg install $NB_META` from the nextbsd-pkg flat repo, done by
+#       this repo's own build.sh: NextBSD-server for the Server images (the
+#       default), NextBSD-desktop for Desktop images (nextbsd/nextbsd#680).
+#       nextbsd-ci is used by this repo
 #       only for the img/iso boot-test harness, never for assembly. It leaves
-#       NextBSD's pkg (from the NextBSD repo, via NextBSD-everything) and its
+#       NextBSD's pkg (from the NextBSD repo, via NextBSD-server) and its
 #       database in the image, and nextbsd-overlays supplies its config
 #       (/private/etc/pkg.conf, /private/etc/pkg/NextBSD.conf), so an
 #       installed system can `pkg update` / `pkg upgrade` out of the box and
@@ -40,8 +42,9 @@
 #   out/NextBSD-<arch>-rpi5-<stamp>.img.zip   MBR: FAT32 boot + rw UFS root
 #
 # <stamp> is <version>-<build>, e.g. 27.0.0-42: the ProductVersion and
-# ProductBuildVersion of the NextBSD-everything the image installed, from its
-# /System/Library/CoreServices/SystemVersion.plist (nextbsd/nextbsd#536). Packages
+# ProductBuildVersion of the system the image installed, from the
+# /System/Library/CoreServices/SystemVersion.plist that NextBSD-server (before
+# nextbsd/nextbsd#680, NextBSD-everything) ships (nextbsd/nextbsd#536). Packages
 # from before nextbsd-pkg shipped that plist have none, and then <stamp> is
 # IMG_DATE, as it always was.
 # The board token comes FIRST and that is load-bearing -- build.yml's release
@@ -55,7 +58,7 @@ set -eu
 ARCH_EXPLICIT=${ARCH:+yes}
 ARCH=${ARCH:-amd64}
 # UTC build timestamp. The version itself comes from the installed
-# NextBSD-everything's SystemVersion.plist (step 6, nextbsd/nextbsd#536);
+# SystemVersion.plist (step 6, nextbsd/nextbsd#536);
 # IMG_DATE names the image, os-release and nextbsd-version only when the
 # packages predate that plist. CI passes it so the names agree either way.
 : "${IMG_DATE:=$(date -u +%Y%m%d-%H%M%S)}"
@@ -111,9 +114,23 @@ NBOSVERSION=2700000
 NB_ABI="NextBSD:$((NBOSVERSION / 100000)):${ABIARCH}"
 
 # How the rootfs gets the OS (see header): `pkg` = every published image
-# (pkg install NextBSD-everything); `artifacts` = manual 1:1 artifact
+# (pkg install $NB_META); `artifacts` = manual 1:1 artifact
 # snapshot via nextbsd-ci's shared assembly.
 ASSEMBLY=${ASSEMBLY:-pkg}
+# The meta-package a pkg-assembled image installs (nextbsd/nextbsd#680):
+# NextBSD-server (the core OS; the Server images) or NextBSD-desktop
+# (NextBSD-server plus GNUstep and the desktop; the Desktop images). A repo
+# published before #680 has neither, only NextBSD-everything; then the
+# default falls back to it (step 2), so this script works on either side of
+# the nextbsd-pkg change.
+NB_META=${NB_META:-NextBSD-server}
+case "$NB_META" in
+  NextBSD-server|NextBSD-desktop|NextBSD-everything) ;;
+  *)
+    echo "ERROR: unknown NB_META='$NB_META' (expected NextBSD-server, NextBSD-desktop or NextBSD-everything)" >&2
+    exit 1
+    ;;
+esac
 case "$ASSEMBLY" in
   artifacts|pkg) ;;
   *)
@@ -281,9 +298,22 @@ CONF
         ln -s "private/$_pd" "$RF/$_pd"
     done
 
-    echo "==> pkg update + install NextBSD-everything into $RF (ABI=$ABI OSVERSION=$OSVERSION)"
     $PKG update -f
-    $PKG install -y NextBSD-everything
+    # NB_META must be in the catalogue. NextBSD-server falls back to
+    # NextBSD-everything for a repo published before nextbsd/nextbsd#680;
+    # NextBSD-desktop has no fallback (no desktop without it).
+    if [ -z "$($PKG rquery -r NextBSD '%n' "$NB_META" 2>/dev/null || true)" ]; then
+        if [ "$NB_META" = NextBSD-server ] \
+           && [ -n "$($PKG rquery -r NextBSD '%n' NextBSD-everything 2>/dev/null || true)" ]; then
+            echo "==> the NextBSD repo has no NextBSD-server (published before nextbsd/nextbsd#680); installing NextBSD-everything"
+            NB_META=NextBSD-everything
+        else
+            echo "ERROR: the NextBSD repo ($PKG_REPO_URL) has no $NB_META" >&2
+            exit 1
+        fi
+    fi
+    echo "==> pkg install $NB_META into $RF (ABI=$ABI OSVERSION=$OSVERSION)"
+    $PKG install -y "$NB_META"
 fi
 
 # Fail loudly if the assembly laid down nothing (empty rootfs -> later steps
@@ -377,15 +407,15 @@ done
 # 5b. Bake pkglist.txt packages into the shipped rootfs, so BOTH the published
 #     .img and .iso (same rootfs) ship them out of the box. They come from the
 #     NextBSD repo only, through the same isolated REPOS_DIR ($NBREPO) as
-#     NextBSD-everything above, so pkg ignores the build VM's own signed repos
+#     $NB_META above, so pkg ignores the build VM's own signed repos
 #     (which jam the SAT solver) and never reaches pkg.FreeBSD.org. Empty
-#     since #545: pkg comes from the NextBSD repo through NextBSD-everything.
+#     since #545: pkg comes from the NextBSD repo through NextBSD-server.
 #     pkg resolves each package's full dependency closure automatically — no
 #     manual runtime-lib audit (unlike the base srclist); the libscan step
 #     below then re-verifies the closure over the whole rootfs.
 #     It uses the same NextBSD pkg-static ($PKG) with the NextBSD ABI; ABI /
 #     OSVERSION / ASSUME_ALWAYS_YES are still exported, and the NextBSD
-#     catalogue is still fresh, from the NextBSD-everything install above.
+#     catalogue is still fresh, from the $NB_META install above.
 # ---------------------------------------------------------------------------
 if [ -f "$ROOT/pkglist.txt" ]; then
     EXTRA_PKGS=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$ROOT/pkglist.txt" | tr '\n' ' ')
@@ -400,7 +430,7 @@ fi
 #     things accumulate in the rootfs, and neither is needed at runtime:
 #
 #       - the downloaded package tarballs, in PKG_CACHEDIR (/var/cache/pkg).
-#         Every install above (NextBSD-everything, then pkglist.txt) leaves its
+#         Every install above ($NB_META, then pkglist.txt) leaves its
 #         .pkg files there. `pkg clean -a` is scoped to exactly this.
 #       - the fetched repository catalogue, in PKG_DBDIR
 #         (/var/db/pkg/repos/<repo>/db), written by the `pkg update` above.
@@ -444,8 +474,9 @@ fi
 
 # ---------------------------------------------------------------------------
 # 6. Version identity (nextbsd/nextbsd#536). The single source is Darwin's
-#    /System/Library/CoreServices/SystemVersion.plist, which NextBSD-everything
-#    owns: ProductName NextBSD, ProductVersion 27.0.0 (the kernel's
+#    /System/Library/CoreServices/SystemVersion.plist, which NextBSD-server
+#    owns (NextBSD-everything before nextbsd/nextbsd#680; NextBSD-desktop
+#    requires NextBSD-server, so a Desktop image has it too): ProductName NextBSD, ProductVersion 27.0.0 (the kernel's
 #    kern.osrelease) and ProductBuildVersion <build> (nextbsd-pkg's run
 #    number), the same two values as the package version 27.0.0.<build>.
 #    Every reader takes them from the installed plist, so a fresh image and a
@@ -454,7 +485,7 @@ fi
 #      - /bin/nextbsd-version, written below, reads it each time it runs;
 #      - /etc/os-release, which the login banner (nextbsd-fetch, PRETTY_NAME)
 #        reads, is generated from it: here for the image, and on the installed
-#        system by NextBSD-everything's Lua post-install script, which pkg runs
+#        system by NextBSD-server's Lua post-install script, which pkg runs
 #        on every install and upgrade of the package. Both write these lines.
 #    Packages from before nextbsd-pkg shipped the plist have none; then all
 #    three fall back to IMG_DATE, as before.
@@ -477,7 +508,7 @@ if [ -f "$RF$SYSVER_PLIST" ]; then
 fi
 if [ -n "$NB_NAME" ] && [ -n "$NB_VERSION" ] && [ -n "$NB_BUILD" ]; then
     echo "==> version: $NB_NAME $NB_VERSION ($NB_BUILD), from $SYSVER_PLIST"
-    # The same lines NextBSD-everything's post-install script writes.
+    # The same lines NextBSD-server's post-install script writes.
     cat > "$RF/etc/os-release" <<OSREL
 NAME="${NB_NAME}"
 VERSION="${NB_VERSION} (${NB_BUILD})"
@@ -493,7 +524,7 @@ OSREL
     # tell it from the rpi5 board image.
     IMG_STAMP="${NB_VERSION}-${NB_BUILD}"
 else
-    echo "==> version: no $SYSVER_PLIST in NextBSD-everything (packages from before nextbsd/nextbsd#536); using $IMG_DATE"
+    echo "==> version: no $SYSVER_PLIST in the installed packages (from before nextbsd/nextbsd#536); using $IMG_DATE"
     cat > "$RF/etc/os-release" <<OSREL
 NAME="NextBSD"
 PRETTY_NAME="NextBSD ${IMG_DATE}"
@@ -512,8 +543,8 @@ if [ ! -x "$RF/bin/nextbsd-version" ]; then
     cat > "$RF/bin/nextbsd-version" <<NBV
 #!/bin/sh
 # nextbsd-version: the installed NextBSD version and build, from
-# ${SYSVER_PLIST}, which NextBSD-everything installs and
-# pkg upgrade replaces (nextbsd/nextbsd#536). sw_vers(1) reads the same file.
+# ${SYSVER_PLIST}, which NextBSD-server installs and
+# pkg upgrade replaces (nextbsd/nextbsd#536, #680). sw_vers(1) reads the same file.
 p=${SYSVER_PLIST}
 s() {
 	awk -v k="<key>\$1</key>" 'index(\$0, k) {

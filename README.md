@@ -172,23 +172,27 @@ A NextBSD system is versioned `27.0.0 (<build>)`
 kernel's release (`uname -r`) and `<build>` is the nextbsd-pkg run that built
 the packages; every NextBSD package is versioned `27.0.0.<build>`.
 
-The installed `NextBSD-everything` package owns Darwin's
+The installed `NextBSD-server` package owns Darwin's
 `/System/Library/CoreServices/SystemVersion.plist` (`ProductName`,
 `ProductVersion`, `ProductBuildVersion`), and everything that shows the version
 reads it from the installed system, so a fresh image and a `pkg upgrade`d one
-agree:
+agree. The Server images install `NextBSD-server`; Desktop images will install
+`NextBSD-desktop`, which requires it. `NextBSD-server` replaced
+`NextBSD-everything` ([#680](https://github.com/nextbsd/nextbsd/issues/680)),
+which stays for a while as an empty package that depends on it, so `pkg upgrade`
+moves older systems over:
 
 ```sh
 sw_vers                  # ProductName: NextBSD, ProductVersion: 27.0.0, BuildVersion: <build>
 sw_vers -productVersion  # 27.0.0
 nextbsd-version          # NextBSD 27.0.0 (<build>)
-pkg info NextBSD-everything   # NextBSD-everything-27.0.0.<build>
+pkg info NextBSD-server  # NextBSD-server-27.0.0.<build>
 cat /etc/os-release      # PRETTY_NAME="NextBSD 27.0.0 (<build>)", VERSION_ID, BUILD_ID, ...
 ```
 
 `/etc/os-release`, which the login banner reads, is generated from the plist:
 by `build.sh` for a fresh image, and on an installed system by
-`NextBSD-everything`'s post-install script, which pkg runs on every upgrade of
+`NextBSD-server`'s post-install script, which pkg runs on every upgrade of
 the package. The published file names carry the same pair:
 `NextBSD-Server-<arch>-27.0.0-<build>.iso`. Images built from packages that predate
 the plist fall back to the build's UTC timestamp (`YYYYMMDD-HHMMSS`) for all of

@@ -123,9 +123,9 @@ jobs:
           swap-storage: false
 
       # Compute the datestamp once on the host and pass it into the VM. The
-      # image is named after the version and build of the NextBSD-everything
+      # image is named after the version and build of the NextBSD-server
       # it installs (NextBSD-<arch>-27.0.0-<build>.img.zip, from its
-      # SystemVersion.plist; nextbsd/nextbsd#536), which only build.sh knows,
+      # SystemVersion.plist; nextbsd/nextbsd#536, #680), which only build.sh knows,
       # so the steps after the build read the stamp off the file it wrote.
       # The datestamp is the stamp only for packages from before that plist.
       - name: compute build date
@@ -173,13 +173,16 @@ jobs:
             export ARCH=${{ matrix.arch }}
             export IMG_DATE=${{ steps.meta.outputs.date }}
             # Every image this repo publishes assembles from nextbsd-pkg
-            # (pkg install NextBSD-everything) via this repo's own build.sh:
+            # (pkg install NextBSD-server, the Server Preview's meta-package,
+            # nextbsd/nextbsd#680; build.sh falls back to NextBSD-everything
+            # for a repo published before it) via this repo's own build.sh:
             # the image ships pkg, its database and the in-image repo config,
             # so an installed system can `pkg update` / `pkg upgrade` out of
             # the box. nextbsd-ci is NOT used for assembly here — only for
             # the img/iso boot-test harness (tests/*-boot-test.sh). Image
             # freshness follows nextbsd-pkg's last (manual) publish.
             export ASSEMBLY=pkg
+            export NB_META=NextBSD-server
             sh build.sh
 
       - name: checksum + summary
@@ -315,6 +318,7 @@ jobs:
             # Same as the build job above: pkg-assembled from nextbsd-pkg via
             # this repo's own build.sh; nextbsd-ci is boot-tests only.
             export ASSEMBLY=pkg
+            export NB_META=NextBSD-server
             sh build.sh
 
       - name: checksum + summary
@@ -594,7 +598,7 @@ jobs:
           ISO=$(cd out && ls NextBSD-amd64-[0-9]*.iso.zip)
           STAMP=${ISO#NextBSD-amd64-}; STAMP=${STAMP%.iso.zip}
           case "$STAMP" in
-            *.*.*-*) V="NextBSD ${STAMP%-*} (${STAMP##*-}), the version and build of the NextBSD-everything these images install." ;;
+            *.*.*-*) V="NextBSD ${STAMP%-*} (${STAMP##*-}), the version and build of the NextBSD-server these images install." ;;
             *)       V="Images stamped ${STAMP}: their packages predate SystemVersion.plist, so they carry no version." ;;
           esac
           echo "line=$V" >> "$GITHUB_OUTPUT"

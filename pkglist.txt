@@ -1,9 +1,10 @@
 # Extra packages baked into the published NextBSD img + ISO from the NextBSD
-# repo (nextbsd-pkg), through the same isolated repo config as
-# NextBSD-everything. Both images are assembled from the same rootfs, so
+# repo (nextbsd-pkg), through the same isolated repo config as the
+# meta-package build.sh installs first (NB_META: NextBSD-server for the
+# Server images, nextbsd/nextbsd#680). Both images are assembled from the same rootfs, so
 # everything listed here ships in BOTH the .img and the .iso.
 #
-# Empty: pkg itself comes from the NextBSD repo through NextBSD-everything
+# Empty: pkg itself comes from the NextBSD repo through NextBSD-server
 # (nextbsd-pkg#19), never from pkg.FreeBSD.org (#545). NextBSD ships no
 # FreeBSD repo config (nextbsd-kernel#376), and nothing here is ever taken
 # from pkg.FreeBSD.org.
