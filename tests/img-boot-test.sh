@@ -31,8 +31,8 @@ esac
   https://github.com/nextbsd/nextbsd-ci.git nextbsd-ci
 
 # NB_DESKTOP=1 (Desktop images, nextbsd/nextbsd#678): also check, on the
-# booted system, that launchd loaded WindowServer and loginwindow and started
-# the WindowServer. The harness has no hook for extra commands after login,
+# booted system, that launchd loaded WindowServer and loginwindow, that the
+# WindowServer is ready on QEMU's virtio-gpu, and that loginwindow connected. The harness has no hook for extra commands after login,
 # so tests/desktop-check.exp.inc goes in front of its suite-tail.exp.inc,
 # which login-only boots reach straight after the login (once per checkout).
 if [ -n "${NB_DESKTOP:-}" ]; then

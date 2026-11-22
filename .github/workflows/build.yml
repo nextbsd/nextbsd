@@ -440,8 +440,9 @@ jobs:
     # WindowServer and loginwindow at boot, but CI's console is serial, where
     # the getty job still runs getty (it only leaves ttyv0 to loginwindow),
     # so it reaches the same login prompt; NB_DESKTOP=1 then also checks, on
-    # the booted system, that both jobs are loaded and that launchd started
-    # the WindowServer (tests/desktop-check.exp.inc).
+    # the booted system, that both jobs are loaded, that the WindowServer is
+    # ready on QEMU's virtio-gpu and that loginwindow connected to it
+    # (tests/desktop-check.exp.inc).
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:

@@ -10,14 +10,22 @@
 #     launchd. NextBSD-desktop-apps' post-install script enabled both in the
 #     overrides database; build.sh checked the database, this checks that
 #     launchd read it.
-#   - launchd started the WindowServer: /var/log/WindowServer.log (the job's
-#     StandardErrorPath) has its startup line, and no run-time linker error.
+#   - the WindowServer came up on QEMU's virtio-gpu (the harness gives both
+#     arches one: q35's VGA plus virtio-gpu-pci, virt's virtio-gpu-pci) and
+#     is serving: /var/log/WindowServer.log (the job's StandardErrorPath)
+#     has "ready: <W>x<H>, service org.nextbsd.windowserver".
+#   - loginwindow connected to it as a client ("client N (loginwindow, pid
+#     P) connected" in the same log).
+#   Measured on the first CI boots (nextbsd/nextbsd#684), amd64 and arm64,
+#   disk image and live ISO: the virtio-gpu DRM device (card0, connector
+#   Virtual-1) comes up at 1280x800, Mesa offers only llvmpipe so the
+#   WindowServer draws with pixman, and loginwindow connects within about
+#   15 seconds of boot, well before the serial login. The checks wait up to
+#   90 seconds for both lines anyway.
 #
 # What it reports, without gating: the jobs' launchctl list rows (PID and last
-# exit status) and the end of the WindowServer's and loginwindow's logs,
-# which say whether the WindowServer found a display on QEMU's virtio-gpu.
-# CI's console is serial and nobody looks at the screen, so whether a display
-# came up there is a fact about the emulator, not a verdict on the image.
+# exit status), the WindowServer's display, renderer, warning and error lines,
+# and the end of loginwindow's log.
 #
 # The echo'd sentinels are split with quotes ('-' or "" in the middle) so the
 # terminal's echo of a typed line can never match the output it waits for.
@@ -63,11 +71,11 @@ expect {
     "NB-DESK-LIST-END" {}
 }
 
-# 3. The WindowServer's log. launchd starts the job as soon as it loads it,
-#    long before the login above, so the log is normally there already; give
-#    it up to a minute anyway. Then show its end, and loginwindow's.
-set timeout 120
-send "i=0; until r test -s /var/log/WindowServer.log || \[ \$i -ge 30 \]; do sleep 2; i=\$((i+1)); done; echo NB-WS'-'LOG-BEGIN; r tail -n 40 /var/log/WindowServer.log; echo NB-WS'-'LOG-END; r tail -n 20 /var/log/loginwindow.log; echo NB-LW'-'LOG-END\r"
+# 3. The WindowServer's log: wait (up to 90 s) until it is ready and
+#    loginwindow has connected, then show the lines that matter, and the end
+#    of loginwindow's own log.
+set timeout 150
+send "i=0; until { r grep -q 'info: ready: ' /var/log/WindowServer.log && r grep -q '(loginwindow, pid' /var/log/WindowServer.log; } 2>/dev/null || \[ \$i -ge 45 \]; do sleep 2; i=\$((i+1)); done; echo NB-WS'-'LOG-BEGIN; r grep -e 'error:' -e 'warning:' -e 'dri/card' -e 'renderer:' -e ' connected' -e 'info: ready: ' /var/log/WindowServer.log | head -n 40; echo NB-WS'-'LOG-END; r tail -n 15 /var/log/loginwindow.log; echo NB-LW'-'LOG-END\r"
 set wslog ""
 expect {
     timeout { puts "\nFAIL: DESKTOP — the WindowServer log dump did not finish within ${timeout}s"; exit 1 }
@@ -79,21 +87,29 @@ expect {
     "NB-LW-LOG-END" {}
 }
 
-if {![regexp {WindowServer\[[0-9]+\]} $wslog]} {
-    puts "\nFAIL: DESKTOP-WINDOWSERVER — /var/log/WindowServer.log is empty or has no WindowServer line: launchd never started it"
-    exit 1
-}
 if {[regexp {ld-elf[.]so[.]1: [^\r\n]*} $wslog ldmsg]} {
     puts "\nFAIL: DESKTOP-WINDOWSERVER — the WindowServer cannot run: $ldmsg"
     exit 1
 }
-puts "\nOK: DESKTOP-WINDOWSERVER — launchd started the WindowServer"
-if {[regexp {(/dev/dri/card[0-9]+): [0-9]+ displays? connected} $wslog -> card]} {
-    puts "\nINFO: DESKTOP-DISPLAY — the WindowServer is driving a display on $card"
-} elseif {[regexp {error: ([^\r\n]*)} $wslog -> wserr]} {
-    puts "\nINFO: DESKTOP-DISPLAY — no display: the WindowServer says \"$wserr\" (not gated: see tests/desktop-check.exp.inc)"
-} else {
-    puts "\nINFO: DESKTOP-DISPLAY — the WindowServer log names no display yet (not gated)"
+if {![regexp {ready: ([0-9]+x[0-9]+), service org[.]nextbsd[.]windowserver} $wslog -> wsmode]} {
+    if {[regexp {error: ([^\r\n]*)} $wslog -> wserr]} {
+        puts "\nFAIL: DESKTOP-WINDOWSERVER — the WindowServer never became ready on QEMU's virtio-gpu: \"$wserr\""
+    } else {
+        puts "\nFAIL: DESKTOP-WINDOWSERVER — /var/log/WindowServer.log has no ready line within 90 s"
+    }
+    exit 1
+}
+puts "\nOK: DESKTOP-WINDOWSERVER — the WindowServer is ready at $wsmode"
+if {![regexp {client [0-9]+ \(loginwindow, pid [0-9]+\) connected} $wslog]} {
+    puts "\nFAIL: DESKTOP-LOGINWINDOW — loginwindow never connected to the WindowServer within 90 s"
+    exit 1
+}
+puts "\nOK: DESKTOP-LOGINWINDOW — loginwindow connected to the WindowServer"
+if {[regexp {renderer: ([^\r\n]*)} $wslog -> wsrend]} {
+    puts "\nINFO: DESKTOP — renderer: $wsrend"
+}
+foreach w [regexp -all -inline {warning: [^\r\n]*} $wslog] {
+    puts "\nINFO: DESKTOP — WindowServer $w"
 }
 
 set timeout $_saved_desktop_timeout
