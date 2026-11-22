@@ -38,11 +38,21 @@ entirely differently than those original solutions.
 
 ## Try it in 5 minutes
 
-1. Grab the latest [Server Preview][release]. Download
-   `NextBSD-Server-<ARCH>-<VERSION>.iso`, the live ISO. `<ARCH>` is
-   `amd64` (x86-64) or `arm64` (AArch64); both are built, boot-tested and
-   published with each build. (`NextBSD-Server-rpi5-*.img.zip` is for the
-   Raspberry Pi 5 family: write it to a USB stick or NVMe and boot it.)
+There are two previews, built together from the same packages:
+
+- **[Desktop Preview][desktop]** (`continuous-desktop`): NextBSD with its
+  desktop (`NextBSD-desktop`: the WindowServer, the graphical login,
+  Workspace, the Dock and the apps, on GNUstep). It boots to the graphical
+  login.
+- **[Server Preview][release]** (`continuous-server`): the same system
+  without the desktop (`NextBSD-server`), with a text console.
+
+1. Grab the latest [Desktop Preview][desktop] or [Server Preview][release].
+   Download `NextBSD-<Desktop|Server>-<ARCH>-<VERSION>.iso`, the live ISO.
+   `<ARCH>` is `amd64` (x86-64) or `arm64` (AArch64); both are built,
+   boot-tested and published with each build.
+   (`NextBSD-<Desktop|Server>-rpi5-*.img.zip` is for the Raspberry Pi 5
+   family: write it to a USB stick or NVMe and boot it.)
 2. Boot it in [QEMU](https://www.qemu.org/) (easiest), or write it to a
    USB stick and boot on bare metal. It runs live from the ISO:
 
@@ -80,7 +90,34 @@ entirely differently than those original solutions.
    on `em0`, syslog come up, and the `login:` prompt land. Log in
    as `root` (no password, hit Enter).
 
+   A Desktop ISO booted the same way (`-nographic`) also lands at the serial
+   `login:` prompt: the graphical login only takes the screen. To see the
+   desktop, replace `-nographic` with a display and a virtio GPU, which the
+   WindowServer drives (CI boots both arches on one):
+
+   ```sh
+   # amd64: q35 already has a PS/2 keyboard and mouse
+   -device virtio-gpu-pci -display default -serial stdio
+   # arm64: virt has no input devices, so add USB ones
+   -device virtio-gpu-pci -device qemu-xhci -device usb-kbd -device usb-mouse \
+     -display default -serial stdio
+   ```
+
+### From a Server install to a Desktop one
+
+The Desktop Preview is the Server Preview plus one meta-package, so an
+installed Server system becomes a Desktop one with:
+
+```sh
+pkg install NextBSD-desktop
+reboot
+```
+
+The package enables the WindowServer and the graphical login for the next
+boot (it doesn't start them under the running console).
+
 [release]: https://github.com/nextbsd/nextbsd/releases/tag/continuous-server
+[desktop]: https://github.com/nextbsd/nextbsd/releases/tag/continuous-desktop
 
 ## Networking just works
 
@@ -176,7 +213,7 @@ The installed `NextBSD-server` package owns Darwin's
 `/System/Library/CoreServices/SystemVersion.plist` (`ProductName`,
 `ProductVersion`, `ProductBuildVersion`), and everything that shows the version
 reads it from the installed system, so a fresh image and a `pkg upgrade`d one
-agree. The Server images install `NextBSD-server`; Desktop images will install
+agree. The Server images install `NextBSD-server`; the Desktop images install
 `NextBSD-desktop`, which requires it. `NextBSD-server` replaced
 `NextBSD-everything` ([#680](https://github.com/nextbsd/nextbsd/issues/680)),
 which stays for a while as an empty package that depends on it, so `pkg upgrade`
@@ -225,19 +262,24 @@ prebuilt toolchain container), so those stages never need a FreeBSD host. The
 final image assembly (`build.sh`) then runs inside a **FreeBSD VM**
 (`vmactions/freebsd-vm`) on that same Linux runner — it needs a real FreeBSD
 userland to run `makefs`/`mkimg` and lay the image down — which also boot-tests
-the result and refreshes the `continuous-server` release on a successful `main` build.
+the result and refreshes the `continuous-server` and `continuous-desktop` releases on a successful `main` build.
 Because the kernel and base arrive as published artifacts, `build.sh` is a CI
 orchestration step, not a standalone local-build command.
 
 ## Releases
 
-Each build of `main` that passes its boot test publishes the [Server Preview][release]
-(`continuous-server`): the amd64 and arm64 live ISOs
-(`NextBSD-Server-<arch>-<version>.iso`), the Raspberry Pi 5 image
-(`NextBSD-Server-rpi5-<version>.img.zip`) and one `SHA256SUMS`. The latest is
-always at that tag. The amd64 and arm64 GPT disk images CI boot-tests are kept
-as workflow artifacts, not published. A Desktop Preview (`continuous-desktop`)
-will be published beside it once the desktop is packaged.
+Each build of `main` that passes its boot tests publishes two releases from the
+same packages:
+
+| Release | Installs | Files |
+|---|---|---|
+| [Desktop Preview][desktop] (`continuous-desktop`) | `NextBSD-desktop` | `NextBSD-Desktop-amd64-<version>.iso`, `NextBSD-Desktop-arm64-<version>.iso`, `NextBSD-Desktop-rpi5-<version>.img.zip`, `SHA256SUMS` |
+| [Server Preview][release] (`continuous-server`) | `NextBSD-server` | `NextBSD-Server-amd64-<version>.iso`, `NextBSD-Server-arm64-<version>.iso`, `NextBSD-Server-rpi5-<version>.img.zip`, `SHA256SUMS` |
+
+The latest is always at those tags. CI boot-tests the amd64 and arm64 images of
+both in QEMU; the Raspberry Pi 5 images are built from the same system but not
+boot-tested, because QEMU doesn't emulate the board. The amd64 and arm64 GPT
+disk images CI boot-tests are kept as workflow artifacts, not published.
 
 ## Going deeper
 

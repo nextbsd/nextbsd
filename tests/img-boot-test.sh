@@ -30,6 +30,20 @@ esac
 [ -d nextbsd-ci/.git ] || git clone --depth 1 --branch v0.3.5 \
   https://github.com/nextbsd/nextbsd-ci.git nextbsd-ci
 
+# NB_DESKTOP=1 (Desktop images, nextbsd/nextbsd#678): also check, on the
+# booted system, that launchd loaded WindowServer and loginwindow, that the
+# WindowServer is ready on QEMU's virtio-gpu, and that loginwindow connected. The harness has no hook for extra commands after login,
+# so tests/desktop-check.exp.inc goes in front of its suite-tail.exp.inc,
+# which login-only boots reach straight after the login (once per checkout).
+if [ -n "${NB_DESKTOP:-}" ]; then
+  T=nextbsd-ci/harness/suite-tail.exp.inc
+  if ! grep -q 'desktop-check.exp.inc' "$T"; then
+    cat tests/desktop-check.exp.inc "$T" > "$T.new"
+    mv "$T.new" "$T"
+  fi
+  echo "==> desktop image: tests/desktop-check.exp.inc runs after the login"
+fi
+
 echo "==> img boot test: $IMG (arch=${ARCH:-amd64}) — shared harness, login-only"
 ls -lh "$IMG"
 
