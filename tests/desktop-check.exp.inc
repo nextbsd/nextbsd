@@ -21,7 +21,7 @@
 #   Virtual-1) comes up at 1280x800, Mesa offers only llvmpipe so the
 #   WindowServer draws with pixman, and loginwindow connects within about
 #   15 seconds of boot, well before the serial login. The checks wait up to
-#   90 seconds for both lines anyway.
+#   90 seconds for each line anyway.
 #
 # What it reports, without gating: the jobs' launchctl list rows (PID and last
 # exit status), the WindowServer's display, renderer, warning and error lines,
@@ -46,12 +46,12 @@ expect {
 # 1. Both jobs loaded (launchctl list <label> exits non-zero for an unknown
 #    job: the getty job's own test for loginwindow).
 array set nb_dj {}
-send "for j in org.nextbsd.WindowServer org.nextbsd.loginwindow; do if r launchctl list \$j >/dev/null 2>&1; then s=loaded; else s=missing; fi; echo \"NB-DESK\"\"TOP-JOB \$j \$s\"; done\r"
+send "for j in WindowServer loginwindow; do r launchctl list org.nextbsd.\$j >/dev/null 2>&1 && s=loaded || s=missing; echo NB-DESK'-'JOB \$j \$s; done\r"
 expect {
     timeout { puts "\nFAIL: DESKTOP — the launchd job check printed nothing within ${timeout}s"; exit 1 }
     -re $re_panic { puts "\nFAIL: kernel panic during the desktop check"; exit 1 }
-    -re {NB-DESKTOP-JOB (org\.nextbsd\.[A-Za-z]+) (loaded|missing)} {
-        set nb_dj($expect_out(1,string)) $expect_out(2,string)
+    -re {NB-DESK-JOB ([A-Za-z]+) (loaded|missing)} {
+        set nb_dj(org.nextbsd.$expect_out(1,string)) $expect_out(2,string)
         if {[array size nb_dj] < 2} { exp_continue }
     }
 }
@@ -71,17 +71,34 @@ expect {
     "NB-DESK-LIST-END" {}
 }
 
-# 3. The WindowServer's log: wait (up to 90 s) until it is ready and
+# 3. The WindowServer's log: wait (up to 90 s each) until it is ready and
 #    loginwindow has connected, then show the lines that matter, and the end
-#    of loginwindow's own log.
-set timeout 150
-send "i=0; until { r grep -q 'info: ready: ' /var/log/WindowServer.log && r grep -q '(loginwindow, pid' /var/log/WindowServer.log; } 2>/dev/null || \[ \$i -ge 45 \]; do sleep 2; i=\$((i+1)); done; echo NB-WS'-'LOG-BEGIN; r grep -e 'error:' -e 'warning:' -e 'dri/card' -e 'renderer:' -e ' connected' -e 'info: ready: ' /var/log/WindowServer.log | head -n 40; echo NB-WS'-'LOG-END; r tail -n 15 /var/log/loginwindow.log; echo NB-LW'-'LOG-END\r"
+#    of loginwindow's own log. One short line per command: a 430-character
+#    line lost everything past the same point on all four Desktop boots, so
+#    each line stays well under 200 characters and waits for its own
+#    sentinel.
+set timeout 120
+send "i=0; until r grep -q 'ready: ' /var/log/WindowServer.log || \[ \$i -ge 45 \]; do sleep 2; i=\$((i+1)); done; echo NB-WS'-'WAITED\r"
+expect {
+    timeout { puts "\nFAIL: DESKTOP — waiting for the WindowServer did not finish within ${timeout}s"; exit 1 }
+    -re $re_panic { puts "\nFAIL: kernel panic during the desktop check"; exit 1 }
+    "NB-WS-WAITED" {}
+}
+send "i=0; until r grep -q '(loginwindow, pid' /var/log/WindowServer.log || \[ \$i -ge 45 \]; do sleep 2; i=\$((i+1)); done; echo NB-LW'-'WAITED\r"
+expect {
+    timeout { puts "\nFAIL: DESKTOP — waiting for loginwindow did not finish within ${timeout}s"; exit 1 }
+    -re $re_panic { puts "\nFAIL: kernel panic during the desktop check"; exit 1 }
+    "NB-LW-WAITED" {}
+}
+set timeout 60
+send "echo NB-WS'-'LOG-BEGIN; r grep -E 'error:|warning:|dri/card|renderer:|connected|ready:' /var/log/WindowServer.log | head -40; echo NB-WS'-'LOG-END\r"
 set wslog ""
 expect {
     timeout { puts "\nFAIL: DESKTOP — the WindowServer log dump did not finish within ${timeout}s"; exit 1 }
     -re $re_panic { puts "\nFAIL: kernel panic during the desktop check"; exit 1 }
     -re {NB-WS-LOG-BEGIN(.*)NB-WS-LOG-END} { set wslog $expect_out(1,string) }
 }
+send "r tail -n 15 /var/log/loginwindow.log; echo NB-LW'-'LOG-END\r"
 expect {
     timeout { puts "\nWARN: DESKTOP — the loginwindow log dump did not finish" }
     "NB-LW-LOG-END" {}
