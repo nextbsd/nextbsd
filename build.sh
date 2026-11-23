@@ -108,6 +108,29 @@ MIRROR="https://download.freebsd.org/ftp/releases/${ARCH}/${FREEBSD_VERSION}-REL
 # Used by ASSEMBLY=pkg — every image this repo publishes.
 PKG_REPO_URL="https://github.com/nextbsd/nextbsd-pkg/releases/download/continuous-${ARCH}"
 
+# fetch_retry OUT URL: fetch(1) URL to OUT, trying up to 5 times with a
+# growing wait (5, 10, 15, 20 s) between tries, for hosts that answer a
+# request with a transient error. raw.githubusercontent.com once returned
+# "Service Unavailable" for one of the Pi device trees and failed a whole
+# image build. Each try writes OUT.part and renames it only on success, so a
+# failed try never leaves a half-written OUT for a later build to reuse.
+fetch_retry() {
+    _fr_out=$1 _fr_url=$2 _fr_try=1
+    while :; do
+        if fetch -o "$_fr_out.part" "$_fr_url"; then
+            mv -f "$_fr_out.part" "$_fr_out"
+            return 0
+        fi
+        if [ "$_fr_try" -ge 5 ]; then
+            echo "ERROR: could not fetch $_fr_url after $_fr_try tries." >&2
+            return 1
+        fi
+        echo "==> fetch failed (try $_fr_try of 5); retrying in $((_fr_try * 5))s" >&2
+        sleep $((_fr_try * 5))
+        _fr_try=$((_fr_try + 1))
+    done
+}
+
 # NextBSD's package ABI (nextbsd-kernel#376), the same values nextbsd-pkg
 # stamps on every package and on the catalogue: NextBSD:27:<arch> (aarch64 on
 # arm64), OSVERSION 2700000. A NextBSD 27 system's own pkg computes exactly
@@ -768,8 +791,9 @@ if [ "$BOARD" = rpi500 ]; then
             _dtb="$DIST/${RPI_FIRMWARE_TAG}-${d}.dtb"
             if [ ! -f "$_dtb" ]; then
                 echo "==> fetching ${d}.dtb from raspberrypi/firmware $RPI_FIRMWARE_TAG"
-                fetch -o "$_dtb" \
-                    "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_TAG}/boot/${d}.dtb"
+                fetch_retry "$_dtb" \
+                    "https://raw.githubusercontent.com/raspberrypi/firmware/${RPI_FIRMWARE_TAG}/boot/${d}.dtb" ||
+                    exit 1
             fi
             cp "$_dtb" "$BOOTSTAGE/${d}.dtb"
             # A flattened device tree opens with magic 0xd00dfeed, big-endian.
