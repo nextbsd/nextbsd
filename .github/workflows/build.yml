@@ -38,6 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       build_needed: ${{ steps.detect.outputs.build_needed }}
+      install_test: ${{ steps.detect.outputs.install_test }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -51,7 +52,10 @@ jobs:
           AFTER: ${{ github.sha }}
         run: |
           set -eu
-          force() { echo "==> forcing full build ($1)"; echo "build_needed=true" >> "$GITHUB_OUTPUT"; exit 0; }
+          # install_test: run install-test (nextbsd/nextbsd#686) on every push
+          # and manual run, and on a PR that touches the workflow, tests/ or
+          # build.sh.
+          force() { echo "==> forcing full build ($1)"; echo "build_needed=true" >> "$GITHUB_OUTPUT"; echo "install_test=true" >> "$GITHUB_OUTPUT"; exit 0; }
           case "$EVENT" in
             pull_request)
               [ -n "${BASE_SHA:-}" ] || force "no base sha"
@@ -81,6 +85,13 @@ jobs:
           fi
           echo "build_needed=$need" >> "$GITHUB_OUTPUT"
           echo "==> build_needed=$need"
+          inst=true
+          if [ "$EVENT" = pull_request ]; then
+            hit=$(printf '%s\n' "$changed" | grep -E '^(\.github/workflows/|tests/|build\.sh$)' || true)
+            [ -n "$hit" ] || inst=false
+          fi
+          echo "install_test=$inst" >> "$GITHUB_OUTPUT"
+          echo "==> install_test=$inst"
 
   build:
     name: build (${{ matrix.variant }} ${{ matrix.arch }})
@@ -591,6 +602,111 @@ jobs:
             tail -500 boot-test.log || true
             echo "=== end serial log ==="
           fi
+
+  # Install the live ISO onto a blank disk and boot the result
+  # (nextbsd/nextbsd#686, Phase 1 of E31, nextbsd/nextbsd#600):
+  # tests/install-test.sh boots the ISO with a second, blank 32 GB disk, runs
+  # the installer engine on it as Installer.app's helper does
+  # (do-install.sh -d vtbd0), powers off, boots the installed disk alone and
+  # checks it: UFS installs today, and the full ZFS layout (pool NextBSD, six
+  # datasets, bootfs, host ID, boot environment) as soon as the ISO's engine
+  # installs ZFS (nextbsd/nextbsd-userland#658), plus the login account's home
+  # under /Local/Users, dsstatus and dspromote's same-file-system rule, and on
+  # Desktop that WindowServer and loginwindow start.
+  #
+  # Runs on every push to main and manual run, and on a PR that touches the
+  # workflow, tests/ or build.sh (changes.install_test). A tests-only PR
+  # skips the build, so this takes the last good main build's ISO, as
+  # img-test does.
+  #
+  # NON-BLOCKING for publishing: not in release's `needs` until it has proven
+  # stable. On a PR it is an ordinary check.
+  install-test:
+    name: install-test (${{ matrix.variant }} ${{ matrix.arch }})
+    needs: [changes, build]
+    if: "!cancelled() && needs.changes.result == 'success' && needs.changes.outputs.install_test == 'true' && (needs.build.result == 'success' || needs.build.result == 'skipped')"
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.arch == 'arm64' && 150 || 60 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ['amd64', 'arm64']
+        variant: ['Server', 'Desktop']
+        include:
+          - arch: 'amd64'
+            runner: 'ubuntu-24.04'
+          - arch: 'arm64'
+            runner: 'ubuntu-24.04-arm'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: download built ISO (artifact)
+        if: needs.changes.outputs.build_needed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*
+          path: out/
+          merge-multiple: true
+
+      - name: download the last good build's ISO (build skipped)
+        if: needs.changes.outputs.build_needed != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p out
+          for run in $(gh run list --repo "$GITHUB_REPOSITORY" --workflow build.yml \
+                         --branch main --status success --limit 30 \
+                         --json databaseId --jq '.[].databaseId'); do
+            if gh run download "$run" --repo "$GITHUB_REPOSITORY" \
+                 --pattern 'NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*' --dir out/ 2>/dev/null; then
+              echo "==> ISO from run $run"
+              break
+            fi
+          done
+          find out -mindepth 2 -name 'NextBSD-*' -exec mv {} out/ \;
+          ls -lh out/
+          ls out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*.iso.zip >/dev/null
+
+      - name: install qemu + expect
+        run: |
+          sudo apt-get update
+          if [ "${{ matrix.arch }}" = arm64 ]; then
+            sudo apt-get install -y --no-install-recommends qemu-system-arm qemu-efi-aarch64 expect
+          else
+            sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf expect
+          fi
+
+      - name: install, then boot the installed disk
+        env:
+          ARCH: ${{ matrix.arch }}
+          NB_DESKTOP: ${{ matrix.variant == 'Desktop' && '1' || '' }}
+        run: |
+          chmod +x tests/install-test.sh
+          ISO=$(ls out/NextBSD-${{ matrix.variant }}-${{ matrix.arch }}-[0-9]*.iso.zip)
+          ./tests/install-test.sh "$ISO"
+
+      - name: dump the serial logs
+        if: always()
+        run: |
+          for l in tests/install-live.log tests/install-disk.log; do
+            [ -f "$l" ] || continue
+            echo "=== $l (tail 400; shared harness transcript) ==="
+            tail -400 "$l" || true
+            echo "=== end $l ==="
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: install-test-logs-${{ matrix.variant }}-${{ matrix.arch }}
+          path: |
+            tests/install-live.log
+            tests/install-disk.log
+          retention-days: 14
+          if-no-files-found: ignore
 
   release:
     name: release
