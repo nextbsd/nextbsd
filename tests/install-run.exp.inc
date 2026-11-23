@@ -98,9 +98,11 @@ send "r env -i PATH=/sbin:/usr/sbin:/bin:/usr/bin $eng/do-install.sh -d vtbd0 </
 # One arm for every engine line, so the earliest line in the buffer is the
 # one matched: with an arm per kind, expect takes the first ARM that matches
 # anywhere, and a later PROGRESS would swallow the PHASE line before it.
+# Lines end \r\r\n here (sudo's pty and the console each add a \r), so the
+# line end is \r*\n.
 expect {
     -re $re_panic { puts "\nFAIL: INSTALL-RUN — kernel panic during the install"; exit 1 }
-    -re {(PROGRESS|PHASE|STATUS|DONE|NB-INST-RC=)[ \t]*([^\r\n]*)\r?\n} {
+    -re {(PROGRESS|PHASE|STATUS|DONE|NB-INST-RC=)[ \t]*([^\r\n]*)\r*\n} {
         set k $expect_out(1,string)
         set v [string trim $expect_out(2,string)]
         switch -- $k {
