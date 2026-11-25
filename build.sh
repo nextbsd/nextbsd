@@ -677,6 +677,35 @@ echo "==> [libscan] ELF shared-library closure over rootfs"
 )
 echo "==> [libscan] end"
 
+# 5z-rpi. The Pi boots through U-Boot and loader.efi (#687), and the loader
+#     reads the kernel from the root file system: /boot/kernel.RPI5/kernel,
+#     which the arm64 NextBSD-kernel package ships (nextbsd-pkg#53), so
+#     pkg upgrade updates it. loader.conf.d/rpi5.conf picks it. Root needs
+#     no line here: the kernel's ROOTDEVNAME is ufs:/dev/ufs/ROOTFS, and an
+#     install gets its own (the installer's step 5b; none at all on ZFS,
+#     where the loader passes the pool's bootfs).
+if [ "$BOARD" = rpi500 ]; then
+    _rk="$WORK/rootfs/boot/kernel.RPI5/kernel"
+    if [ ! -f "$_rk" ]; then
+        echo "ERROR: no /boot/kernel.RPI5/kernel in the rootfs." >&2
+        echo "       The arm64 NextBSD-kernel package ships it from nextbsd-pkg#53 on;" >&2
+        echo "       an older package can't boot a Pi through the loader." >&2
+        exit 1
+    fi
+    if [ "$(od -An -tx1 -N4 "$_rk" | tr -d ' \n')" != 7f454c46 ]; then
+        echo "ERROR: $_rk is not an ELF." >&2
+        exit 1
+    fi
+    mkdir -p "$WORK/rootfs/boot/loader.conf.d"
+    cat > "$WORK/rootfs/boot/loader.conf.d/rpi5.conf" <<'RPIEOF'
+# Raspberry Pi 5 family (nextbsd/nextbsd#687): the firmware starts U-Boot,
+# U-Boot starts loader.efi, and the loader boots this board's kernel, not the
+# generic /boot/kernel/kernel. Both come from the NextBSD-kernel package.
+kernel="kernel.RPI5"
+RPIEOF
+    echo "==> rpi500: loader.conf.d/rpi5.conf (kernel.RPI5, $(wc -c < "$_rk" | tr -d ' ') bytes)"
+fi
+
 # 6a. root UFS — content plus ~1.5 GB read-write headroom. UFS label
 #     "ROOTFS" matches the kernel's baked-in ROOTDEVNAME
 #     (ufs:/dev/ufs/ROOTFS, #188). softupdates for crash resilience.
@@ -702,28 +731,32 @@ ls -lh "$WORK/rootfs.ufs"
 # ---------------------------------------------------------------------------
 # 6b-rpi. Raspberry Pi 500+ boot partition + MBR image   (BOARD=rpi500)
 #
-#   The BCM2712 bootloader lives in EEPROM and boots what the plan calls route
-#   (a): it reads config.txt off the first FAT partition, loads the DTB named
-#   there, patches it (memory size, MAC, the RP1 window), loads kernel8.img and
-#   enters it at EL2 with x0 = the FDT physical address. No loader(8), no UEFI.
-#   That is why this lane produces an .img and no .iso: the firmware looks for
-#   a FAT partition holding config.txt, and an ISO 9660 image has neither, so
-#   it is never even opened. Booting NextBSD from optical media on this board
-#   is not a missing feature, it is not a thing the hardware does.
+#   The BCM2712 bootloader lives in EEPROM: it reads config.txt off the first
+#   FAT partition, picks and patches a DTB (memory size, MAC, the RP1 window)
+#   and starts kernel=. That is u-boot.bin (#693, nextbsd#687): U-Boot provides
+#   the EFI interface the firmware lacks and starts FreeBSD's loader.efi from
+#   this partition, which boots /boot/kernel.RPI5/kernel from the root file
+#   system -- so pkg upgrade updates the kernel, and on a ZFS install the loader
+#   boots the pool's boot environment. kernel8.img is the same kernel for the
+#   firmware to enter directly, kept as a fallback.
 #
-#   It also means nothing can be kldload'ed at boot -- there is no loader to do
-#   it -- so every boot-critical driver is compiled into the board kernel.
+#   This lane produces an .img and no .iso: the firmware looks for a FAT
+#   partition holding config.txt, and an ISO 9660 image has neither. U-Boot
+#   can't drive USB on this board (it sits behind RP1), so the image boots from
+#   SD or NVMe, not from a USB stick.
+#
+#   Every boot-critical driver is still compiled into the board kernel, so the
+#   kernel8.img fallback, which has no loader, boots too.
 #
 #   None of bootcode.bin / start*.elf / fixup*.dat belong here. Those are the
 #   pre-2712 VideoCore boot chain; Raspberry Pi OS ships them only because one
 #   boot partition serves every model back to the Pi 2. Measured on the board:
 #   a 2712 boot partition needs exactly config.txt, a DTB, and the kernel.
 #
-#   The root half needs nothing from this partition at all. The board kernel
-#   carries ROOTDEVNAME="ufs:/dev/ufs/ROOTFS" and INIT_PATH=/sbin/launchd
-#   compiled in (nextbsd-kernel#11 / #180), so it mounts root by GEOM label and
-#   execs launchd with no tunables passed from anywhere. The MBR slice layout
-#   below is therefore not load-bearing for finding root.
+#   The board kernel carries ROOTDEVNAME="ufs:/dev/ufs/ROOTFS" and
+#   INIT_PATH=/sbin/launchd compiled in (nextbsd-kernel#11 / #180), so it
+#   mounts root by GEOM label and execs launchd with no root tunable. The
+#   loader, though, has to find /boot on the root: hence the BSD label below.
 # ---------------------------------------------------------------------------
 if [ "$BOARD" = rpi500 ]; then
     echo "==> rpi500: staging the FAT boot partition"
@@ -759,6 +792,45 @@ if [ "$BOARD" = rpi500 ]; then
         exit 1
     fi
     echo "    kernel8.img $(ls -l "$BOOTSTAGE/kernel8.img" | awk '{print $5}') bytes, Image header ok"
+
+    # U-Boot and loader.efi (#687). config.txt below starts u-boot.bin, not
+    # kernel8.img; U-Boot provides the EFI interface the firmware lacks and
+    # starts EFI/BOOT/BOOTAA64.EFI, FreeBSD's loader, from this partition, and
+    # the loader boots /boot/kernel.RPI5/kernel from the root file system.
+    # kernel8.img stays as a manual fallback (kernel=kernel8.img).
+    #
+    # U-Boot can't drive USB on a Pi 5 (it sits behind RP1), so this image
+    # boots from SD or NVMe, not from a USB stick.
+    #
+    # u-boot.bin comes from nextbsd-kernel-extensions' continuous-u-boot
+    # release (nextbsd-kernel-extensions#41) with its sha256; UBOOT overrides
+    # it with a local file.
+    if [ -n "${UBOOT:-}" ]; then
+        cp "$UBOOT" "$BOOTSTAGE/u-boot.bin"
+    else
+        _ubrel=https://github.com/nextbsd/nextbsd-kernel-extensions/releases/download/continuous-u-boot
+        echo "==> fetching u-boot.bin from nextbsd-kernel-extensions continuous-u-boot"
+        fetch_retry "$WORK/u-boot.bin.sha256" "$_ubrel/u-boot.bin.sha256" &&
+            fetch_retry "$BOOTSTAGE/u-boot.bin" "$_ubrel/u-boot.bin" ||
+            { echo "ERROR: no u-boot.bin from continuous-u-boot (nextbsd-kernel-extensions#41)" >&2; exit 1; }
+        _want=$(awk '{print $1; exit}' "$WORK/u-boot.bin.sha256")
+        _got=$(sha256 -q "$BOOTSTAGE/u-boot.bin" 2>/dev/null || sha256sum "$BOOTSTAGE/u-boot.bin" | awk '{print $1}')
+        if [ "$_got" != "$_want" ]; then
+            echo "ERROR: u-boot.bin sha256 $_got, expected $_want" >&2
+            exit 1
+        fi
+    fi
+    echo "    u-boot.bin $(wc -c < "$BOOTSTAGE/u-boot.bin" | tr -d ' ') bytes"
+    mkdir -p "$BOOTSTAGE/EFI/BOOT"
+    if [ -f "$WORK/rootfs/boot/loader_lua.efi" ]; then
+        cp "$WORK/rootfs/boot/loader_lua.efi" "$BOOTSTAGE/EFI/BOOT/BOOTAA64.EFI"
+    elif [ -f "$WORK/rootfs/boot/loader.efi" ]; then
+        cp "$WORK/rootfs/boot/loader.efi" "$BOOTSTAGE/EFI/BOOT/BOOTAA64.EFI"
+    else
+        echo "ERROR: no loader.efi in rootfs/boot/" >&2
+        exit 1
+    fi
+    echo "    EFI/BOOT/BOOTAA64.EFI from the rootfs loader"
 
     # The device tree must be Raspberry Pi's own. The firmware reads, patches
     # and hands over THIS blob, and its patching only understands the vendor
@@ -851,11 +923,14 @@ if [ "$BOARD" = rpi500 ]; then
     cat > "$BOOTSTAGE/config.txt" <<CFG
 # NextBSD on the Raspberry Pi 500+ (BCM2712).
 #
-# The EEPROM bootloader reads this file, loads device_tree=, patches it, loads
-# kernel= and enters it at EL2 with x0 = the FDT physical address. There is no
-# loader(8) anywhere in that path, so anything the kernel needs in order to
-# boot is compiled into it rather than loaded here.
-kernel=kernel8.img
+# The EEPROM bootloader reads this file, picks and patches a device tree, and
+# starts kernel=: U-Boot, which starts FreeBSD's loader (EFI/BOOT/BOOTAA64.EFI)
+# from this partition, which boots /boot/kernel.RPI5/kernel from the root file
+# system with /boot/loader.conf (nextbsd/nextbsd#687). pkg upgrade updates that
+# kernel. kernel8.img is the same kernel for the firmware to start directly:
+# kernel=kernel8.img here is the fallback, and then cmdline.txt is its
+# command line (the loader path ignores cmdline.txt).
+kernel=u-boot.bin
 cmdline=cmdline.txt
 arm_64bit=1
 
@@ -994,6 +1069,10 @@ dtoverlay=nextbsd-v3d
 # loaded. That is a driver/packaging decision, not a device-tree one, and this
 # comment is where to start when it has to be made.
 dtoverlay=nextbsd-vc4-kms
+
+# U-Boot reads an NVMe drive through the external PCIe connector, which the
+# firmware only enables with this (nextbsd/nextbsd#687).
+dtparam=pciex1
 CFG
 
     # FreeBSD's FDT bootargs parser takes the "FreeBSD:" prefix and reads what
@@ -1039,9 +1118,16 @@ CFG
     # the arm64 images are anchored on the stamp's leading digit
     # (NextBSD-<Variant>-arm64-[0-9]*), so this one never matches them.
     IMG_NAME="NextBSD-${VARIANT}-rpi5-${IMG_STAMP}.img"
+    # The root goes in a BSD label inside the freebsd slice, as on FreeBSD's
+    # own Pi images and as the installer lays it out: loader.efi looks for
+    # UFS in a label's partitions (#687). The kernel still finds it by its
+    # GEOM label, ufs/ROOTFS.
+    mkimg -s bsd -f raw \
+        -p freebsd-ufs:="$WORK/rootfs.ufs" \
+        -o "$WORK/rootslice.img"
     mkimg -s mbr -f raw \
         -p fat32lba:="$WORK/rpiboot.img" \
-        -p freebsd:="$WORK/rootfs.ufs" \
+        -p freebsd:="$WORK/rootslice.img" \
         -o "$WORK/$IMG_NAME"
     ls -lh "$WORK/$IMG_NAME"
 
@@ -1050,7 +1136,7 @@ CFG
     ls -lh "$OUT/${IMG_NAME}.zip"
     sha256 "$OUT/${IMG_NAME}.zip" 2>/dev/null || sha256sum "$OUT/${IMG_NAME}.zip"
 
-    rm -f "$WORK/$IMG_NAME" "$WORK/rootfs.ufs" "$WORK/rpiboot.img"
+    rm -f "$WORK/$IMG_NAME" "$WORK/rootfs.ufs" "$WORK/rootslice.img" "$WORK/rpiboot.img"
     echo "==> done: $OUT/${IMG_NAME}.zip"
     echo "    No ISO in this lane, by design -- see the comment above."
     exit 0

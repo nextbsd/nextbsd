@@ -52,7 +52,8 @@ There are two previews, built together from the same packages:
    `<ARCH>` is `amd64` (x86-64) or `arm64` (AArch64); both are built,
    boot-tested and published with each build.
    (`NextBSD-<Desktop|Server>-rpi5-*.img.zip` is for the Raspberry Pi 5
-   family: write it to a USB stick or NVMe and boot it.)
+   family: write it to an SD card or NVMe drive and boot it. A USB stick
+   won't boot, because U-Boot can't drive the Pi 5's USB.)
 2. Boot it in [QEMU](https://www.qemu.org/) (easiest), or write it to a
    USB stick and boot on bare metal. It runs live from the ISO:
 
