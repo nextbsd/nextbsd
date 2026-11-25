@@ -860,17 +860,19 @@ jobs:
       # then clears the draft flag. Run 45109117441 logged "Release ready" for
       # continuous-desktop yet left it a draft: visitors saw only the source
       # archives and the public API returned 404. Clear the flag ourselves
-      # (harmless when it's already public), then check
-      # the release the way a visitor sees it, unauthenticated, with all four
-      # files.
+      # (harmless when it's already public), then check that the tag resolves
+      # to a published release with all four files; a draft counts as none.
+      # The check asks with the token: the unauthenticated API is rate limited
+      # per IP, and in run 45708823276 every try got 403 on a release that was
+      # already public, so the desktop release never published.
       - name: make sure the Server Preview release is public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit continuous-server --draft=false --repo "$GITHUB_REPOSITORY"
           for try in 1 2 3 4 5 6; do
-            n=$(curl -fsS "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/continuous-server" |
-                jq '[.assets[] | select(.state == "uploaded")] | length' 2>/dev/null || echo 0)
+            n=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/continuous-server" \
+                  --jq 'if .draft then 0 else [.assets[] | select(.state == "uploaded")] | length end' 2>/dev/null || echo 0)
             [ "$n" = 4 ] && { echo "continuous-server is public with $n files"; exit 0; }
             echo "continuous-server: $n public files, want 4 (try $try); waiting"
             sleep 10
@@ -919,17 +921,19 @@ jobs:
       # then clears the draft flag. Run 45109117441 logged "Release ready" for
       # continuous-desktop yet left it a draft: visitors saw only the source
       # archives and the public API returned 404. Clear the flag ourselves
-      # (harmless when it's already public), then check
-      # the release the way a visitor sees it, unauthenticated, with all four
-      # files.
+      # (harmless when it's already public), then check that the tag resolves
+      # to a published release with all four files; a draft counts as none.
+      # The check asks with the token: the unauthenticated API is rate limited
+      # per IP, and in run 45708823276 every try got 403 on a release that was
+      # already public, so the desktop release never published.
       - name: make sure the Desktop Preview release is public
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release edit continuous-desktop --draft=false --repo "$GITHUB_REPOSITORY"
           for try in 1 2 3 4 5 6; do
-            n=$(curl -fsS "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/continuous-desktop" |
-                jq '[.assets[] | select(.state == "uploaded")] | length' 2>/dev/null || echo 0)
+            n=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/continuous-desktop" \
+                  --jq 'if .draft then 0 else [.assets[] | select(.state == "uploaded")] | length end' 2>/dev/null || echo 0)
             [ "$n" = 4 ] && { echo "continuous-desktop is public with $n files"; exit 0; }
             echo "continuous-desktop: $n public files, want 4 (try $try); waiting"
             sleep 10
