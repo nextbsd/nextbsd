@@ -842,7 +842,7 @@ jobs:
             - `NextBSD-Server-amd64-*.iso`, `NextBSD-Server-arm64-*.iso`: live
               ISOs for PCs and virtual machines.
             - `NextBSD-Server-rpi5-*.img.zip`: Raspberry Pi 5 family (5 B,
-              500/500+, CM5). Write it to a USB stick or NVMe and boot it. It is
+              500/500+, CM5). Write it to an SD card or NVMe drive and boot it (not a USB stick: U-Boot can't drive the Pi 5's USB). It is
               built from the same system but **not** boot tested by CI: qemu
               does not emulate this board.
             - `SHA256SUMS`: checksums for all three.
@@ -901,7 +901,7 @@ jobs:
             - `NextBSD-Desktop-amd64-*.iso`, `NextBSD-Desktop-arm64-*.iso`: live
               ISOs for PCs and virtual machines.
             - `NextBSD-Desktop-rpi5-*.img.zip`: Raspberry Pi 5 family (5 B,
-              500/500+, CM5). Write it to a USB stick or NVMe and boot it. It is
+              500/500+, CM5). Write it to an SD card or NVMe drive and boot it (not a USB stick: U-Boot can't drive the Pi 5's USB). It is
               built from the same system but **not** boot tested by CI: qemu
               does not emulate this board.
             - `SHA256SUMS`: checksums for all three.
