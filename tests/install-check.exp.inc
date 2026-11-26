@@ -9,17 +9,20 @@
 #
 #   ZFS  (the root is ZFS, or a NextBSD pool is imported: the engine of
 #        nextbsd/nextbsd-userland#658). Strict, every item gates:
-#          - pool NextBSD, ONLINE, bootfs NextBSD/ROOT/default
-#          - / is NextBSD/ROOT/default, mounted read-write (and writable)
+#          - pool NextBSD, ONLINE, bootfs NextBSD/ROOT/<BE>, where <BE> is the
+#            installed system's version and build (27.0.0-192, from sw_vers;
+#            nextbsd/nextbsd-userland#674), or default from an installer
+#            before that
+#          - / is the bootfs, mounted read-write (and writable)
 #          - the six datasets exist, are mounted, at their mountpoints:
-#              NextBSD/ROOT/default     /
+#              NextBSD/ROOT/<BE>        /
 #              NextBSD/Local            /Local
 #              NextBSD/root             /root
 #              NextBSD/private/tmp      /private/tmp
 #              NextBSD/private/var/log  /private/var/log
 #              NextBSD/private/var/tmp  /private/var/tmp
 #          - kern.hostid is not zero (the boot pass, nextbsd-userland#200)
-#          - bectl list shows default active now and on reboot (NR)
+#          - bectl list shows <BE> active now and on reboot (NR)
 #          - no vfs.root.mountfrom line in /boot/loader.conf (bootfs decides)
 #          - vtbd0 is GPT with an efi and a freebsd-zfs partition
 #   UFS  (today's engine). / is /dev/ufs/NEXTBSD (the installed system's own
@@ -122,30 +125,38 @@ if {$fs eq "zfs"} {
     } else {
         puts "\nOK: INSTALLED-ZFS-POOL — pool NextBSD is ONLINE"
     }
-    set o [nb_run BOOTFS {r zpool get -H -o value bootfs NextBSD 2>&1 | sed 's/^/NBV bootfs /'}]
+    set o [nb_run BOOTFS {r zpool get -H -o value bootfs NextBSD 2>&1 | sed 's/^/NBV bootfs /'; echo "NBV swvers $(sw_vers -productVersion)-$(sw_vers -buildVersion)"}]
     set bootfs [nb_val $o bootfs]
-    if {$bootfs ne "NextBSD/ROOT/default"} {
-        nb_bad "INSTALLED-ZFS-BOOTFS — bootfs is '$bootfs', not NextBSD/ROOT/default"
-    } else {
-        puts "\nOK: INSTALLED-ZFS-BOOTFS — bootfs NextBSD/ROOT/default"
+    # The boot environment is named after the system in it (27.0.0-192);
+    # an installer from before nextbsd/nextbsd-userland#674 named it default.
+    set bename [nb_val $o swvers]
+    set be "NextBSD/ROOT/$bename"
+    if {$bootfs eq "NextBSD/ROOT/default"} {
+        set be $bootfs
+        set bename default
     }
-    if {$rootdev ne "NextBSD/ROOT/default" || $roottype ne "zfs"} {
-        nb_bad "INSTALLED-ZFS-ROOT — / is $rootdev ($roottype), not NextBSD/ROOT/default (zfs)"
+    if {$bootfs ne $be} {
+        nb_bad "INSTALLED-ZFS-BOOTFS — bootfs is '$bootfs', not $be"
     } else {
-        puts "\nOK: INSTALLED-ZFS-ROOT — / is NextBSD/ROOT/default"
+        puts "\nOK: INSTALLED-ZFS-BOOTFS — bootfs $be"
+    }
+    if {$rootdev ne $be || $roottype ne "zfs"} {
+        nb_bad "INSTALLED-ZFS-ROOT — / is $rootdev ($roottype), not $be (zfs)"
+    } else {
+        puts "\nOK: INSTALLED-ZFS-ROOT — / is $be"
     }
 
     # --- the six datasets ---------------------------------------------------
     set o [nb_run DS {r zfs list -H -o name,mounted,mountpoint -r NextBSD 2>&1 | awk '{print "NBV ds", $1, $2, $3}'}]
     set m [nb_run ZMNT {mount -p | awk '$3 == "zfs" {print "NBV zm", $1, $2, $4}'}]
-    foreach {ds mp} {
-        NextBSD/ROOT/default    /
-        NextBSD/Local           /Local
-        NextBSD/root            /root
-        NextBSD/private/tmp     /private/tmp
-        NextBSD/private/var/log /private/var/log
-        NextBSD/private/var/tmp /private/var/tmp
-    } {
+    foreach {ds mp} [list \
+        $be                     / \
+        NextBSD/Local           /Local \
+        NextBSD/root            /root \
+        NextBSD/private/tmp     /private/tmp \
+        NextBSD/private/var/log /private/var/log \
+        NextBSD/private/var/tmp /private/var/tmp \
+    ] {
         set mounted ""; set zmp ""
         regexp -line "^NBV ds $ds (\\S+) (\\S+)\$" $o -> mounted zmp
         if {$mounted eq "" && $zmp eq ""} {
@@ -178,12 +189,12 @@ if {$fs eq "zfs"} {
         puts "\nOK: INSTALLED-ZFS-HOSTID — kern.hostid $hostid"
     }
     set o [nb_run BE {r bectl list -H 2>&1 | awk '{print "NBV be", $1, $2}'}]
-    if {![regexp -line {^NBV be default (\S+)$} $o -> act]} {
-        nb_bad "INSTALLED-ZFS-BE — bectl list has no boot environment named default"
+    if {![regexp -line "^NBV be [string map {. \\.} $bename] (\\S+)\$" $o -> act]} {
+        nb_bad "INSTALLED-ZFS-BE — bectl list has no boot environment named $bename"
     } elseif {[string first N $act] < 0 || [string first R $act] < 0} {
-        nb_bad "INSTALLED-ZFS-BE — boot environment default is '$act', not active now and on reboot (NR)"
+        nb_bad "INSTALLED-ZFS-BE — boot environment $bename is '$act', not active now and on reboot (NR)"
     } else {
-        puts "\nOK: INSTALLED-ZFS-BE — bectl: default is active ($act)"
+        puts "\nOK: INSTALLED-ZFS-BE — bectl: $bename is active ($act)"
     }
     if {$lcroot ne ""} {
         nb_bad "INSTALLED-ZFS-LOADER — loader.conf has a root line ($lcroot); the pool's bootfs should decide"
@@ -227,8 +238,10 @@ if {$user eq "" || $user eq "root"} {
     nb_bad "INSTALLED-HOME — $user's home is '$home', not under /Local/Users"
 } elseif {[nb_val $o isdir] ne "yes" || [nb_val $o owner] ne $user} {
     nb_bad "INSTALLED-HOME — $home is missing or not owned by $user ([nb_val $o owner])"
-} elseif {$fs eq "zfs" && ![string match "NextBSD/Local *" $homefs]} {
-    nb_bad "INSTALLED-HOME — $home is on '$homefs', not in the NextBSD/Local dataset"
+} elseif {$fs eq "zfs" && ![string match "NextBSD/Local *" $homefs] &&
+          ![string match "NextBSD/Local/Users/$user *" $homefs]} {
+    # A home is a dataset of its own since nextbsd/nextbsd-userland#673.
+    nb_bad "INSTALLED-HOME — $home is on '$homefs', not its own NextBSD/Local/Users dataset or NextBSD/Local"
 } else {
     puts "\nOK: INSTALLED-HOME — logged in as $user; home $home exists, owned by $user, on $homefs"
 }
