@@ -1335,18 +1335,37 @@ case " $* " in *" -s "*) VERBOSE=1 ;; esac
 vlog() { [ -n "$VERBOSE" ] && echo "[init] $*"; return 0; }
 vlog "NextBSD live root: assembling overlay"
 
-# Boot media (cd9660). Wait for the CD device / GEOM_LABEL node to settle, then
-# try the volume-label node (mkisoimages.sh -b NEXTBSD) first, then raw cd0/cd1.
-n=0
-while [ ! -e /dev/iso9660/NEXTBSD ] && [ ! -e /dev/cd0 ] && [ "$n" -lt 10 ]; do n=$((n + 1)); sleep 1; done
-for dev in /dev/iso9660/NEXTBSD /dev/cd0 /dev/cd1; do
-	[ -e "$dev" ] || continue
-	if mount -t cd9660 -o ro "$dev" /media 2>&1; then
-		vlog "media mounted from $dev"; break
-	fi
+# Boot media: the cd9660 volume labelled NEXTBSD (mkisoimages.sh -b NEXTBSD),
+# whatever it is on -- a burned disc (cd0, cd1, ...) or the image written to a
+# USB stick (da0). GEOM_LABEL names it the same either way, so never try a
+# bare cdN: an optical drive that attaches before the boot stick, empty or
+# holding some other disc, is not the boot medium (#381). The mfsroot is the
+# root file system, so mountroot never waited for USB or CAM to find disks:
+# wait here, retrying until the label's volume mounts and holds rootfs.uzip.
+MEDIA=/dev/iso9660/NEXTBSD
+MEDIA_WAIT=60
+find_media() {
+	n=0
+	while :; do
+		if [ -e "$MEDIA" ] && mount -t cd9660 -o ro "$MEDIA" /media 2>/dev/null; then
+			[ -e /media/rootfs.uzip ] && return 0
+			umount /media 2>/dev/null
+		fi
+		n=$((n + 1))
+		[ "$n" -ge "$MEDIA_WAIT" ] && return 1
+		sleep 1
+	done
+}
+# Without it there is no system to start: say so and hold a shell here, on
+# the console, instead of going on into an empty root and panicking with
+# "Going nowhere without my init!". Exiting the shell looks again.
+until find_media; do
+	echo "[init] NextBSD install media not found: no cd9660 volume labelled NEXTBSD with rootfs.uzip on it."
+	echo "[init] labels: $(ls /dev/iso9660 2>/dev/null) | disks: $(sysctl -n kern.disks 2>/dev/null)"
+	echo "[init] Connect the NextBSD media, then exit this shell (^D) to look again."
+	/bin/sh </dev/console >/dev/console 2>&1
 done
-vlog "cd nodes: $(ls -d /dev/iso9660/* /dev/cd* 2>/dev/null) | /media: $(ls /media 2>/dev/null)"
-if [ -e /media/rootfs.uzip ]; then vlog "media: /media/rootfs.uzip"; else echo "[init] media: rootfs.uzip-MISSING"; fi
+vlog "media mounted from $MEDIA; disks: $(sysctl -n kern.disks 2>/dev/null)"
 
 # On-demand compressed root: vnode-back the uzip FILE on the CD (no preload),
 # geom_uzip auto-tastes md1 -> /dev/md1.uzip (decompressed on read).
